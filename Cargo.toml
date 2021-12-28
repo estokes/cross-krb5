@@ -1,0 +1,27 @@
+[package]
+name = "cross-krb5"
+authors = ["Eric Stokes <letaris@gmail.com>"]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Cross platform Kerberos v5 interface"
+homepage = "https://github.com/estokes/cross-krb5"
+documentation = "https://docs.rs/cross-krb5"
+readme = "README.md"
+keywords = ["kerberos", "krb5", "gssapi", "sspi", "authentication"]
+categories = ["cryptography"]
+
+[features]
+default = ["krb5_iov"]
+krb5_iov = ["libgssapi/iov"]
+
+[target.'cfg(unix)'.dependencies]
+libgssapi = { version = "0.4", default_features = false }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3",  features = ["sspi", "winnt", "impl-default", "winerror", "winbase", "sysinfoapi", "timezoneapi", "ntsecapi"] }
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+parking_lot = "0.11"
