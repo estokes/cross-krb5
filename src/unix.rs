@@ -1,4 +1,4 @@
-use super::{K5ClientCtx, K5ServerCtx};
+use super::{K5Ctx, K5ServerCtx};
 use anyhow::{Error, Result};
 #[cfg(feature = "krb5_iov")]
 use bytes::Buf as _;
@@ -111,7 +111,7 @@ impl ClientCtx {
     }
 }
 
-impl K5ClientCtx for ClientCtx {
+impl K5Ctx for ClientCtx {
     type Buf = Buf;
 
     fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
@@ -168,7 +168,7 @@ impl ServerCtx {
     }
 }
 
-impl K5ClientCtx for ServerCtx {
+impl K5Ctx for ServerCtx {
     type Buf = Buf;
 
     fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {

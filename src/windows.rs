@@ -1,4 +1,4 @@
-use super::{K5ClientCtx, K5ServerCtx};
+use super::{K5Ctx, K5ServerCtx};
 use anyhow::{anyhow, bail, Result};
 use bytes::{Buf, BytesMut};
 use parking_lot::Mutex;
@@ -409,7 +409,7 @@ impl ClientCtx {
     }
 }
 
-impl K5ClientCtx for ClientCtx {
+impl K5Ctx for ClientCtx {
     type Buf = BytesMut;
 
     fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
@@ -566,7 +566,7 @@ impl ServerCtx {
     }
 }
 
-impl K5ClientCtx for ServerCtx {
+impl K5Ctx for ServerCtx {
     type Buf = BytesMut;
 
     fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
