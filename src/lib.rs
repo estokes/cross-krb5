@@ -10,10 +10,11 @@
 //!
 //! # Example
 //! ```no_run
+//! # use anyhow::Result;
 //! use cross_krb5::{ClientCtx, ServerCtx, K5Ctx, K5ServerCtx};
 //!
 //!# fn run(spn: &str) -> Result<()> {
-//! // setup the server context using the service principal name we were given
+//! // setup the server context using the service principal name
 //! let server = ServerCtx::new(Some(spn))?;
 //! // The current user will request a service ticket for the spn
 //! let client = ClientCtx::new(None, spn)?;
@@ -68,9 +69,10 @@ pub trait K5Ctx {
     /// # Examples
     /// ```no_run
     /// use bytes::{BytesMut, Buf};
-    /// # let ctx = unsafe { std::mem::transmute::<(), ClientCtx>(()); }
+    /// use cross_krb5::{ClientCtx, K5Ctx};
+    /// # let ctx = unsafe { std::mem::zeroed::<ClientCtx>() };
     /// let mut header = BytesMut::new();
-    /// let mut data = BytesMut::from(b"hello world");
+    /// let mut data = BytesMut::from(b"hello world".as_slice());
     /// let mut padding = BytesMut::new();
     /// let mut trailer = BytesMut::new();
     ///
