@@ -4,7 +4,7 @@ authors = ["Eric Stokes <letaris@gmail.com>"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Cross platform Kerberos v5 interface"
+description = "Safe cross platform Kerberos v5 interface"
 homepage = "https://github.com/estokes/cross-krb5"
 documentation = "https://docs.rs/cross-krb5"
 readme = "README.md"
@@ -15,19 +15,20 @@ categories = ["cryptography"]
 default = ["krb5_iov"]
 krb5_iov = ["libgssapi/iov"]
 
-[target.'cfg(unix)'.dependencies]
-libgssapi = { version = "0.4", default_features = false }
-
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3",  features = ["sspi", "winnt", "impl-default", "winerror", "winbase", "sysinfoapi", "timezoneapi", "ntsecapi"] }
+[target.'cfg(unix)'.dependencies.libgssapi]
+version = "0.4"
+default_features = false
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.28"
 features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Security_Authentication_Identity",
     "Win32_Security_Credentials",
-    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
     "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
     "Win32_System_Time"
 ]
 
