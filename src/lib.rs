@@ -1,4 +1,17 @@
 //! Cross platform Kerberos 5
+//! 
+//! cross-krb5 is a single API for basic Kerberos 5 services on Windows, Mac OS, 
+//! linux, and Unix like OSes. It provides most of what gssapi and sspi provide for
+//! kerberos 5 mechanisms, namely mutual authentication, integrity, and encryption.
+//! 
+//! As well as providing a uniform API, services using cross-krb5 should interoperate
+//! across all the supported OSes transparantly, and should interoperate with other
+//! services on all platforms assuming they are not platform specific.
+//! 
+//! # Example
+//! ```no_run
+//! 
+//! ```
 
 use anyhow::Result;
 use bytes::BytesMut;
