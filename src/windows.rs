@@ -1,7 +1,6 @@
 use super::{K5ClientCtx, K5ServerCtx};
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use bytes::{Buf, BytesMut};
-use log::debug;
 use parking_lot::Mutex;
 use std::{
     default::Default,
@@ -109,7 +108,7 @@ impl Cred {
         }
     }
 
-    pub(crate) fn name(&mut self) -> Result<String> {
+    fn _name(&mut self) -> Result<String> {
         let mut names = SecPkgCredentials_NamesW::default();
         unsafe {
             let res = sspi::QueryCredentialsAttributesW(
@@ -169,43 +168,40 @@ fn wrap_iov(
     data: &mut BytesMut,
     padding: &mut BytesMut,
 ) -> Result<()> {
-    task::block_in_place(|| {
-        header.resize(sizes.cbSecurityTrailer as usize, 0);
-        padding.resize(sizes.cbBlockSize as usize, 0);
-        let mut buffers = [
-            SecBuffer {
-                BufferType: sspi::SECBUFFER_TOKEN,
-                cbBuffer: sizes.cbSecurityTrailer,
-                pvBuffer: &mut **header as *mut _ as *mut c_void,
-            },
-            SecBuffer {
-                BufferType: sspi::SECBUFFER_DATA,
-                cbBuffer: data.len() as u32,
-                pvBuffer: &mut **data as *mut _ as *mut c_void,
-            },
-            SecBuffer {
-                BufferType: sspi::SECBUFFER_PADDING,
-                cbBuffer: sizes.cbBlockSize,
-                pvBuffer: &mut **padding as *mut _ as *mut c_void,
-            },
-        ];
-        let mut buf_desc = SecBufferDesc {
-            ulVersion: sspi::SECBUFFER_VERSION,
-            cBuffers: 3,
-            pBuffers: buffers.as_mut_ptr(),
-        };
-        let flags = if !encrypt { KERB_WRAP_NO_ENCRYPT } else { 0 };
-        let res = unsafe {
-            sspi::EncryptMessage(ctx as *mut _, flags, &mut buf_desc as *mut _, 0)
-        };
-        if !SUCCEEDED(res) {
-            bail!("EncryptMessage failed {}", format_error(res))
-        }
-        header.resize(buffers[0].cbBuffer as usize, 0);
-        assert_eq!(buffers[1].cbBuffer as usize, data.len());
-        padding.resize(buffers[2].cbBuffer as usize, 0);
-        Ok(())
-    })
+    header.resize(sizes.cbSecurityTrailer as usize, 0);
+    padding.resize(sizes.cbBlockSize as usize, 0);
+    let mut buffers = [
+        SecBuffer {
+            BufferType: sspi::SECBUFFER_TOKEN,
+            cbBuffer: sizes.cbSecurityTrailer,
+            pvBuffer: &mut **header as *mut _ as *mut c_void,
+        },
+        SecBuffer {
+            BufferType: sspi::SECBUFFER_DATA,
+            cbBuffer: data.len() as u32,
+            pvBuffer: &mut **data as *mut _ as *mut c_void,
+        },
+        SecBuffer {
+            BufferType: sspi::SECBUFFER_PADDING,
+            cbBuffer: sizes.cbBlockSize,
+            pvBuffer: &mut **padding as *mut _ as *mut c_void,
+        },
+    ];
+    let mut buf_desc = SecBufferDesc {
+        ulVersion: sspi::SECBUFFER_VERSION,
+        cBuffers: 3,
+        pBuffers: buffers.as_mut_ptr(),
+    };
+    let flags = if !encrypt { KERB_WRAP_NO_ENCRYPT } else { 0 };
+    let res =
+        unsafe { sspi::EncryptMessage(ctx as *mut _, flags, &mut buf_desc as *mut _, 0) };
+    if !SUCCEEDED(res) {
+        bail!("EncryptMessage failed {}", format_error(res))
+    }
+    header.resize(buffers[0].cbBuffer as usize, 0);
+    assert_eq!(buffers[1].cbBuffer as usize, data.len());
+    padding.resize(buffers[2].cbBuffer as usize, 0);
+    Ok(())
 }
 
 fn wrap(
@@ -228,43 +224,41 @@ fn wrap(
 }
 
 fn unwrap_iov(ctx: &mut SecHandle, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-    task::block_in_place(|| {
-        let mut bufs = [
-            SecBuffer {
-                BufferType: sspi::SECBUFFER_STREAM,
-                cbBuffer: len as u32,
-                pvBuffer: &mut msg[0..len] as *mut _ as *mut c_void,
-            },
-            SecBuffer {
-                BufferType: sspi::SECBUFFER_DATA,
-                cbBuffer: 0,
-                pvBuffer: ptr::null_mut(),
-            },
-        ];
-        let mut bufs_desc = SecBufferDesc {
-            ulVersion: sspi::SECBUFFER_VERSION,
-            cBuffers: 2,
-            pBuffers: bufs.as_mut_ptr(),
-        };
-        let mut qop: u32 = 0;
-        let res = unsafe {
-            sspi::DecryptMessage(
-                ctx as *mut _,
-                &mut bufs_desc as *mut _,
-                0,
-                &mut qop as *mut _,
-            )
-        };
-        if !SUCCEEDED(res) {
-            bail!("decrypt message failed {}", format_error(res))
-        }
-        let hdr_len = bufs[1].pvBuffer as usize - bufs[0].pvBuffer as usize;
-        let data_len = bufs[1].cbBuffer as usize;
-        msg.advance(hdr_len);
-        let data = msg.split_to(data_len);
-        msg.advance(len - hdr_len - data_len); // padding
-        Ok(data)
-    })
+    let mut bufs = [
+        SecBuffer {
+            BufferType: sspi::SECBUFFER_STREAM,
+            cbBuffer: len as u32,
+            pvBuffer: &mut msg[0..len] as *mut _ as *mut c_void,
+        },
+        SecBuffer {
+            BufferType: sspi::SECBUFFER_DATA,
+            cbBuffer: 0,
+            pvBuffer: ptr::null_mut(),
+        },
+    ];
+    let mut bufs_desc = SecBufferDesc {
+        ulVersion: sspi::SECBUFFER_VERSION,
+        cBuffers: 2,
+        pBuffers: bufs.as_mut_ptr(),
+    };
+    let mut qop: u32 = 0;
+    let res = unsafe {
+        sspi::DecryptMessage(
+            ctx as *mut _,
+            &mut bufs_desc as *mut _,
+            0,
+            &mut qop as *mut _,
+        )
+    };
+    if !SUCCEEDED(res) {
+        bail!("decrypt message failed {}", format_error(res))
+    }
+    let hdr_len = bufs[1].pvBuffer as usize - bufs[0].pvBuffer as usize;
+    let data_len = bufs[1].cbBuffer as usize;
+    msg.advance(hdr_len);
+    let data = msg.split_to(data_len);
+    msg.advance(len - hdr_len - data_len); // padding
+    Ok(data)
 }
 
 fn convert_lifetime(lifetime: LARGE_INTEGER) -> Result<Duration> {
@@ -319,20 +313,20 @@ impl Drop for ClientCtxInner {
 }
 
 #[derive(Clone)]
-pub(crate) struct ClientCtx(Arc<Mutex<ClientCtxInner>>);
+pub struct ClientCtx(Arc<Mutex<ClientCtxInner>>);
 
 impl fmt::Debug for ClientCtx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "netidx::os::windows::ClientCtx")
+        write!(f, "ClientCtx")
     }
 }
 
 impl ClientCtx {
-    fn new(cred: Cred, target: &str) -> Result<ClientCtx> {
+    pub fn new(principal: Option<&str>, target_principal: &str) -> Result<Self> {
         Ok(ClientCtx(Arc::new(Mutex::new(ClientCtxInner {
             ctx: SecHandle::default(),
-            cred,
-            target: str_to_wstr(target),
+            cred: Cred::acquire(principal, false)?,
+            target: str_to_wstr(target_principal),
             attrs: 0,
             lifetime: LARGE_INTEGER::default(),
             buf: alloc_krb5_buf()?,
@@ -416,11 +410,11 @@ impl ClientCtx {
     }
 }
 
-impl Krb5Ctx for ClientCtx {
+impl K5ClientCtx for ClientCtx {
     type Buf = BytesMut;
 
     fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
-        task::block_in_place(|| self.do_step(token))
+        self.do_step(token)
     }
 
     fn wrap(&self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
@@ -476,19 +470,19 @@ impl Drop for ServerCtxInner {
 }
 
 #[derive(Clone)]
-pub(crate) struct ServerCtx(Arc<Mutex<ServerCtxInner>>);
+pub struct ServerCtx(Arc<Mutex<ServerCtxInner>>);
 
 impl fmt::Debug for ServerCtx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "netidx::os::windows::ServerCtx")
+        write!(f, "ServerCtx")
     }
 }
 
 impl ServerCtx {
-    fn new(cred: Cred) -> Result<ServerCtx> {
+    pub fn new(principal: Option<&str>) -> Result<Self> {
         Ok(ServerCtx(Arc::new(Mutex::new(ServerCtxInner {
             ctx: SecHandle::default(),
-            cred,
+            cred: Cred::acquire(principal, true)?,
             buf: alloc_krb5_buf()?,
             attrs: 0,
             lifetime: LARGE_INTEGER::default(),
@@ -571,11 +565,11 @@ impl ServerCtx {
     }
 }
 
-impl Krb5Ctx for ServerCtx {
+impl K5ClientCtx for ServerCtx {
     type Buf = BytesMut;
 
     fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
-        task::block_in_place(|| self.do_step(token))
+        self.do_step(token)
     }
 
     fn wrap(&self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
@@ -612,7 +606,7 @@ impl Krb5Ctx for ServerCtx {
     }
 }
 
-impl Krb5ServerCtx for ServerCtx {
+impl K5ServerCtx for ServerCtx {
     fn client(&self) -> Result<String> {
         let mut names = SecPkgContext_NativeNamesW::default();
         let mut inner = self.0.lock();
@@ -627,36 +621,5 @@ impl Krb5ServerCtx for ServerCtx {
             }
             Ok(string_from_wstr(names.sClientName))
         }
-    }
-}
-
-pub(crate) fn create_client_ctx(
-    principal: Option<&str>,
-    target_principal: &str,
-) -> Result<ClientCtx> {
-    task::block_in_place(|| {
-        let cred = Cred::acquire(principal, false)?;
-        ClientCtx::new(cred, target_principal)
-    })
-}
-
-pub(crate) fn create_server_ctx(principal: Option<&str>) -> Result<ServerCtx> {
-    task::block_in_place(|| {
-        debug!("loading server credentials for: {}", principal.unwrap_or("<default>"));
-        let mut cred = Cred::acquire(principal, true)?;
-        debug!("loaded server credentials for: {}", cred.name()?);
-        ServerCtx::new(cred)
-    })
-}
-
-pub(crate) struct Mapper;
-
-impl Mapper {
-    pub(crate) fn new() -> Result<Mapper> {
-        Ok(Mapper)
-    }
-
-    pub(crate) fn groups(&mut self, _user: &str) -> Result<Vec<String>> {
-        todo!("group listing is not implemented on windows")
     }
 }
