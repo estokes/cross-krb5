@@ -28,10 +28,10 @@ pub trait K5ServerCtx: K5ClientCtx {
 pub mod unix;
 
 #[cfg(unix)]
-pub use unix::*;
+pub use crate::unix::{ClientCtx, ServerCtx};
 
 #[cfg(windows)]
 pub mod windows;
 
 #[cfg(windows)]
-pub use crate::windows::*;
+pub use crate::windows::{ClientCtx, ServerCtx};
