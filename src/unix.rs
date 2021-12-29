@@ -1,12 +1,14 @@
 use super::{K5Ctx, K5ServerCtx};
 use anyhow::{Error, Result};
+use bytes::{self, Buf as _, buf::Chain};
 #[cfg(feature = "krb5_iov")]
-use bytes::Buf as _;
 use bytes::BytesMut;
 #[cfg(feature = "krb5_iov")]
 use libgssapi::util::{GssIov, GssIovFake, GssIovType};
 use libgssapi::{
-    context::{ClientCtx as GssClientCtx, CtxFlags, SecurityContext, ServerCtx as GssServerCtx},
+    context::{
+        ClientCtx as GssClientCtx, CtxFlags, SecurityContext, ServerCtx as GssServerCtx,
+    },
     credential::{Cred, CredUsage},
     error::{Error as GssError, MajorFlags},
     name::Name,
@@ -58,7 +60,11 @@ fn wrap_iov(
 }
 
 #[cfg(feature = "krb5_iov")]
-fn unwrap_iov(ctx: &impl SecurityContext, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+fn unwrap_iov(
+    ctx: &impl SecurityContext,
+    len: usize,
+    msg: &mut BytesMut,
+) -> Result<BytesMut> {
     let (hdr_len, data_len) = {
         let mut iov = [
             GssIov::new(GssIovType::Stream, &mut msg[0..len]),
@@ -76,7 +82,11 @@ fn unwrap_iov(ctx: &impl SecurityContext, len: usize, msg: &mut BytesMut) -> Res
 }
 
 #[cfg(not(feature = "krb5_iov"))]
-fn unwrap_iov(ctx: &impl SecurityContext, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+fn unwrap_iov(
+    ctx: &impl SecurityContext,
+    len: usize,
+    msg: &mut BytesMut,
+) -> Result<BytesMut> {
     let mut msg = msg.split_to(len);
     let decrypted = ctx.unwrap(&*msg)?;
     msg.clear();
@@ -85,7 +95,12 @@ fn unwrap_iov(ctx: &impl SecurityContext, len: usize, msg: &mut BytesMut) -> Res
 }
 
 #[derive(Debug, Clone)]
-pub struct ClientCtx(GssClientCtx);
+pub struct ClientCtx {
+    gss: GssClientCtx,
+    header: BytesMut,
+    padding: BytesMut,
+    trailer: BytesMut,
+}
 
 impl ClientCtx {
     pub fn new(principal: Option<&str>, target_principal: &str) -> Result<Self> {
@@ -95,68 +110,82 @@ impl ClientCtx {
                     .canonicalize(Some(&GSS_MECH_KRB5))
             })
             .transpose()?;
-        let target = Name::new(target_principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
-            .canonicalize(Some(&GSS_MECH_KRB5))?;
+        let target =
+            Name::new(target_principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
+                .canonicalize(Some(&GSS_MECH_KRB5))?;
         let cred = {
             let mut s = OidSet::new()?;
             s.add(&GSS_MECH_KRB5)?;
             Cred::acquire(name.as_ref(), None, CredUsage::Initiate, Some(&s))?
         };
-        Ok(ClientCtx(GssClientCtx::new(
-            cred,
-            target,
-            CtxFlags::GSS_C_MUTUAL_FLAG,
-            Some(&GSS_MECH_KRB5),
-        )))
+        Ok(ClientCtx {
+            header: BytesMut::new(),
+            padding: BytesMut::new(),
+            trailer: BytesMut::new(),
+            gss: GssClientCtx::new(
+                cred,
+                target,
+                CtxFlags::GSS_C_MUTUAL_FLAG,
+                Some(&GSS_MECH_KRB5),
+            ),
+        })
     }
 }
 
 impl K5Ctx for ClientCtx {
-    type Buf = Buf;
-
-    fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
-        self.0.step(token).map_err(|e| Error::from(e))
+    type Buffer = Buf;
+    type IOVBuffer = Chain<BytesMut, Chain<BytesMut, Chain<BytesMut, BytesMut>>>;
+        
+    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
+        self.gss.step(token).map_err(|e| Error::from(e))
     }
 
-    fn wrap(&self, encrypt: bool, msg: &[u8]) -> Result<Self::Buf> {
-        self.0.wrap(encrypt, msg).map_err(|e| Error::from(e))
+    fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
+        self.gss.wrap(encrypt, msg).map_err(|e| Error::from(e))
     }
 
-    fn wrap_iov(
-        &self,
-        encrypt: bool,
-        header: &mut BytesMut,
-        data: &mut BytesMut,
-        padding: &mut BytesMut,
-        trailer: &mut BytesMut,
-    ) -> Result<()> {
-        wrap_iov(&self.0, encrypt, header, data, padding, trailer)
+    fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        wrap_iov(
+            &self.gss,
+            encrypt,
+            &mut self.header,
+            &mut msg,
+            &mut self.padding,
+            &mut self.trailer,
+        )?;
+        Ok(self
+            .header
+            .split()
+            .chain(msg.chain(self.padding.split().chain(self.trailer.split()))))
     }
 
-    fn unwrap(&self, msg: &[u8]) -> Result<Self::Buf> {
-        self.0.unwrap(msg).map_err(|e| Error::from(e))
+    fn unwrap(&mut self, msg: &[u8]) -> Result<Self::Buffer> {
+        self.gss.unwrap(msg).map_err(|e| Error::from(e))
     }
 
-    fn unwrap_iov(&self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-        unwrap_iov(&self.0, len, msg)
+    fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+        unwrap_iov(&self.gss, len, msg)
     }
 
-    fn ttl(&self) -> Result<Duration> {
-        self.0.lifetime().map_err(|e| Error::from(e))
+    fn ttl(&mut self) -> Result<Duration> {
+        self.gss.lifetime().map_err(|e| Error::from(e))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct ServerCtx(GssServerCtx);
+pub struct ServerCtx {
+    gss: GssServerCtx,
+    header: BytesMut,
+    padding: BytesMut,
+    trailer: BytesMut,
+}
 
 impl ServerCtx {
     pub fn new(principal: Option<&str>) -> Result<ServerCtx> {
         let name = principal
             .map(|principal| -> Result<Name> {
-                Ok(
-                    Name::new(principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
-                        .canonicalize(Some(&GSS_MECH_KRB5))?,
-                )
+                Ok(Name::new(principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
+                    .canonicalize(Some(&GSS_MECH_KRB5))?)
             })
             .transpose()?;
         let cred = {
@@ -164,55 +193,62 @@ impl ServerCtx {
             s.add(&GSS_MECH_KRB5)?;
             Cred::acquire(name.as_ref(), None, CredUsage::Accept, Some(&s))?
         };
-        Ok(ServerCtx(GssServerCtx::new(cred)))
+        Ok(ServerCtx {
+            gss: GssServerCtx::new(cred),
+            header: BytesMut::new(),
+            padding: BytesMut::new(),
+            trailer: BytesMut::new(),
+        })
     }
 }
 
 impl K5Ctx for ServerCtx {
-    type Buf = Buf;
+    type Buffer = Buf;
+    type IOVBuffer = Chain<BytesMut, Chain<BytesMut, Chain<BytesMut, BytesMut>>>;
 
-    fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
+    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
         match token {
-            Some(token) => self.0.step(token),
-            None => Err(GssError {
-                major: MajorFlags::GSS_S_DEFECTIVE_TOKEN,
-                minor: 0,
-            }),
+            Some(token) => self.gss.step(token),
+            None => Err(GssError { major: MajorFlags::GSS_S_DEFECTIVE_TOKEN, minor: 0 }),
         }
         .map_err(|e| Error::from(e))
     }
 
-    fn wrap(&self, encrypt: bool, msg: &[u8]) -> Result<Self::Buf> {
-        self.0.wrap(encrypt, msg).map_err(|e| Error::from(e))
+    fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
+        self.gss.wrap(encrypt, msg).map_err(|e| Error::from(e))
     }
 
-    fn wrap_iov(
-        &self,
-        encrypt: bool,
-        header: &mut BytesMut,
-        data: &mut BytesMut,
-        padding: &mut BytesMut,
-        trailer: &mut BytesMut,
-    ) -> Result<()> {
-        wrap_iov(&self.0, encrypt, header, data, padding, trailer)
+    fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        wrap_iov(
+            &self.gss,
+            encrypt,
+            &mut self.header,
+            &mut msg,
+            &mut self.padding,
+            &mut self.trailer,
+        )?;
+        Ok(self
+            .header
+            .split()
+            .chain(msg.chain(self.padding.split().chain(self.trailer.split()))))
     }
 
-    fn unwrap(&self, msg: &[u8]) -> Result<Self::Buf> {
-        self.0.unwrap(msg).map_err(|e| Error::from(e))
+    fn unwrap(&mut self, msg: &[u8]) -> Result<Self::Buffer> {
+        self.gss.unwrap(msg).map_err(|e| Error::from(e))
     }
 
-    fn unwrap_iov(&self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-        unwrap_iov(&self.0, len, msg)
+    fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+        unwrap_iov(&self.gss, len, msg)
     }
 
-    fn ttl(&self) -> Result<Duration> {
-        self.0.lifetime().map_err(|e| Error::from(e))
+    fn ttl(&mut self) -> Result<Duration> {
+        self.gss.lifetime().map_err(|e| Error::from(e))
     }
 }
 
 impl K5ServerCtx for ServerCtx {
-    fn client(&self) -> Result<String> {
-        let n = self.0.source_name().map_err(|e| Error::from(e))?;
+    fn client(&mut self) -> Result<String> {
+        let n = self.gss.source_name().map_err(|e| Error::from(e))?;
         Ok(format!("{}", n))
     }
 }
