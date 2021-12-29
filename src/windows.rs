@@ -14,22 +14,8 @@ use std::{
 };
 use winapi::{
     ctypes::*,
-    shared::{
-        minwindef::FILETIME,
-        sspi::{
-            self, SecBuffer, SecBufferDesc, SecHandle, SecPkgContext_NativeNamesW,
-            SecPkgContext_Sizes, SecPkgCredentials_NamesW, SecPkgInfoW,
-            SECPKG_ATTR_SIZES,
-        },
-        winerror::{
-            SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE, SEC_I_COMPLETE_NEEDED, SUCCEEDED,
-        },
-    },
     um::{
-        errhandlingapi::GetLastError,
-        minwinbase::SYSTEMTIME,
         ntsecapi::KERB_WRAP_NO_ENCRYPT,
-        sysinfoapi::GetSystemTime,
         timezoneapi::{SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime},
         winbase::{
             lstrlenW, FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM,
@@ -37,6 +23,20 @@ use winapi::{
         },
         winnt::{LANG_NEUTRAL, LARGE_INTEGER, MAKELANGID, SUBLANG_NEUTRAL},
     },
+};
+use windows::Win32::{
+    Foundation::{
+        GetLastError, FILETIME, SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE,
+        SEC_I_COMPLETE_NEEDED, SYSTEMTIME,
+    },
+    Security::{
+        Authentication::Identity::{
+            SecBuffer, SecBufferDesc, SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
+            SecPkgCredentials_NamesW, SecPkgInfoW, SECPKG_ATTR_SIZES,
+        },
+        Credentials::SecHandle,
+    },
+    System::{SystemInformation::GetSystemTime, Time::{SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime}},
 };
 
 unsafe fn string_from_wstr(s: *const u16) -> String {
