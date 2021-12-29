@@ -69,30 +69,18 @@ pub trait K5Ctx {
 
     /// Wrap data in place using the underlying wrap_iov facility. If
     /// `encrypt` is true then the contents of `data` will be
-    /// encrypted in place. `header`, `padding`, and `trailer` may be
-    /// references to empty newly created `BytesMut` structures, they
-    /// will be resized as needed, and can be reused for subsuquent
-    /// calls in order to avoid further allocation. In order to send
-    /// the message produced by `wrap_iov` you should send in order
-    /// the header, data, padding, and trailer.
+    /// encrypted in place. The returned buffer is NOT contiguous, and
+    /// as such you must use some kind of `writev` implementation to
+    /// properly send it. You can use tokio's `write_buf` directly, or
+    /// you can extract the iovecs for a direct call to `writev` using
+    /// `bytes::Buf::chunks_vectored`. If you don't want to deal with
+    /// iovecs use `wrap`, which does the same thing only slower.
     ///
-    /// # Examples
-    /// ```no_run
-    /// use bytes::{BytesMut, Buf};
-    /// use cross_krb5::{ClientCtx, K5Ctx};
-    /// # let mut ctx = unsafe { std::mem::zeroed::<ClientCtx>() };
-    /// let mut data = BytesMut::from(b"hello world".as_slice());
-    ///
-    /// let buf = ctx.wrap_iov(true, data.split()).expect("failed to wrap_iov");
-    /// // then use your prefered `writev` implementation to send.
-    /// // e.g. tokio `write_buf` is quite convenient.
-    /// ```
-    ///
-    /// Requires feature `krb5_iov`, which is part of the default
-    /// feature set. However `krb5_iov` is not available on Mac OS. As
-    /// such on Mac OS the api will still work, but it will be
-    /// emulated using wrap, so it will not gain any performance
-    /// benefit. On OSes where it is supported using
+    /// If feature `krb5_iov` isn't enabled (it's in the default set)
+    /// then the underlying functionaly will be emulated, and there
+    /// will be no performance gain. `krb5_iov` is currently not
+    /// available on Mac OS, and compilation will fail if you try to
+    /// enable it. On OSes where it is supported using
     /// wrap_iov/unwrap_iov is generally in the neighborhood of 2x to
     /// 3x faster than wrap/unwrap.
     fn wrap_iov(&mut self, encrypt: bool, msg: BytesMut) -> Result<Self::IOVBuffer>;
