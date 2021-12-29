@@ -1,12 +1,14 @@
 //! Cross platform Kerberos 5
 //!
-//! cross-krb5 is a single API for basic Kerberos 5 services on Windows, Mac OS,
-//! Linux, and Unix like OSes. It provides most of what gssapi and sspi provide for
-//! kerberos 5 mechanisms, namely mutual authentication, integrity, and encryption.
+//! cross-krb5 is a single API for basic Kerberos 5 services on
+//! Windows, Mac OS, Linux, and Unix like OSes. It provides most of
+//! what gssapi and sspi provide for kerberos 5 mechanisms, namely
+//! mutual authentication, integrity, and encryption.
 //!
-//! As well as providing a uniform API, services using cross-krb5 should interoperate
-//! across all the supported OSes transparantly, and should interoperate with other
-//! services assuming they are not platform specific.
+//! As well as providing a uniform API, services using cross-krb5
+//! should interoperate across all the supported OSes transparantly,
+//! and should interoperate with other services assuming they are not
+//! platform specific.
 //!
 //! # Example
 //! ```no_run
@@ -47,25 +49,32 @@ pub trait K5Ctx {
     /// The type of buffer that will be returned by the context
     type Buf: Deref<Target = [u8]> + Send + Sync;
 
-    /// perform 1 step of initialization. `token` is the token you received from the other
-    /// side, or `None` if you didn't receive one. If initialization is finished then `step`
-    /// will return `Ok(None)`, and at that point the context is ready to use.
-    /// If `step` returns `Ok(Some(buf))` then initialization isn't finished and you are
-    /// expected to send the contents of that buffer to the other side in order to finish it.
-    /// This may go on for several rounds of back and forth.
+    /// perform 1 step of initialization. `token` is the token you
+    /// received from the other side, or `None` if you didn't receive
+    /// one. If initialization is finished then `step` will return
+    /// `Ok(None)`, and at that point the context is ready to use.  If
+    /// `step` returns `Ok(Some(buf))` then initialization isn't
+    /// finished and you are expected to send the contents of that
+    /// buffer to the other side in order to finish it.  This may go
+    /// on for several rounds of back and forth.
     fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>>;
 
-    /// Wrap the specified message for sending to the other side. If `encrypt`
-    /// is true then the contents will be encrypted. Even if `encrypt` is false
-    /// the integrity of the contents are protected, if the message is altered in
-    /// transit the other side will know.
+    /// Wrap the specified message for sending to the other side. If
+    /// `encrypt` is true then the contents will be encrypted. Even if
+    /// `encrypt` is false the integrity of the contents are
+    /// protected, if the message is altered in transit the other side
+    /// will know.
     fn wrap(&self, encrypt: bool, msg: &[u8]) -> Result<Self::Buf>;
 
-    /// Wrap data in place using the underlying wrap_iov facility. If `encrypt` is true
-    /// then the contents of `data` will be encrypted in place. `header`, `padding`, and `trailer`
-    /// may be references to empty newly created `BytesMut` structures, they will be resized as needed,
-    /// and can be reused for subsuquent calls in order to avoid allocation. In order to send the message
-    /// produced by `wrap_iov` you should send in order the header, data, padding, and trailer.
+    /// Wrap data in place using the underlying wrap_iov facility. If
+    /// `encrypt` is true then the contents of `data` will be
+    /// encrypted in place. `header`, `padding`, and `trailer` may be
+    /// references to empty newly created `BytesMut` structures, they
+    /// will be resized as needed, and can be reused for subsuquent
+    /// calls in order to avoid allocation. In order to send the
+    /// message produced by `wrap_iov` you should send in order the
+    /// header, data, padding, and trailer.
+    ///
     /// # Examples
     /// ```no_run
     /// use bytes::{BytesMut, Buf};
@@ -91,11 +100,14 @@ pub trait K5Ctx {
         trailer: &mut BytesMut,
     ) -> Result<()>;
 
-    /// Unwrap the specified message returning it's decrypted and verified contents
+    /// Unwrap the specified message returning it's decrypted and
+    /// verified contents
     fn unwrap(&self, msg: &[u8]) -> Result<Self::Buf>;
 
-    /// Unwrap in place the message at the beginning of the specified `BytesMut` and then split it off
-    /// and return it. This won't copy or allocate, it just looks that way because the bytes crate is awesome.
+    /// Unwrap in place the message at the beginning of the specified
+    /// `BytesMut` and then split it off and return it. This won't
+    /// copy or allocate, it just looks that way because the bytes
+    /// crate is awesome.
     fn unwrap_iov(&self, len: usize, msg: &mut BytesMut) -> Result<BytesMut>;
 
     /// Return the remaining time this session has to live
@@ -103,7 +115,8 @@ pub trait K5Ctx {
 }
 
 pub trait K5ServerCtx: K5Ctx {
-    /// Return the user principal name of the client context associated with this server context.
+    /// Return the user principal name of the client context
+    /// associated with this server context.
     fn client(&self) -> Result<String>;
 }
 
@@ -124,11 +137,13 @@ use crate::windows::{ClientCtx as ClientCtxImpl, ServerCtx as ServerCtxImpl};
 pub struct ClientCtx(ClientCtxImpl);
 
 impl ClientCtx {
-    /// Create a new client context. If `principal` is none then the credentials of
-    /// the user the current process is running as will be used. `target_principal` is
-    /// the service you intend to communicate with. This should be a service principal name as
-    /// described by GSSAPI, e.g. publish/ken-ohki.ryu-oh.org@RYU-OH.ORG,
-    /// the general form is <service>/host@REALM
+    /// Create a new client context. If `principal` is none then the
+    /// credentials of the user the current process is running as will
+    /// be used. `target_principal` is the service you intend to
+    /// communicate with. This should be a service principal name as
+    /// described by GSSAPI,
+    /// e.g. publish/ken-ohki.ryu-oh.org@RYU-OH.ORG, the general form
+    /// is <service>/host@REALM
     pub fn new(principal: Option<&str>, target_principal: &str) -> Result<Self> {
         Ok(ClientCtx(ClientCtxImpl::new(principal, target_principal)?))
     }
@@ -174,10 +189,11 @@ impl K5Ctx for ClientCtx {
 pub struct ServerCtx(ServerCtxImpl);
 
 impl ServerCtx {
-    /// Create a new server context. `principal` should be the service principal name
-    /// assigned to the service this context is associated with. This is equivelent to
-    /// the `target_principal` speficied in the client context. If it is left as `None`
-    /// it will use the user running the current process.
+    /// Create a new server context. `principal` should be the service
+    /// principal name assigned to the service this context is
+    /// associated with. This is equivelent to the `target_principal`
+    /// speficied in the client context. If it is left as `None` it
+    /// will use the user running the current process.
     pub fn new(principal: Option<&str>) -> Result<Self> {
         Ok(ServerCtx(ServerCtxImpl::new(principal)?))
     }
