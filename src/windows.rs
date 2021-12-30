@@ -439,7 +439,7 @@ impl K5Ctx for ClientCtx {
         self.unwrap_iov(buf.len(), &mut buf)
     }
 
-    fn ttl(&self) -> Result<Duration> {
+    fn ttl(&mut self) -> Result<Duration> {
         convert_lifetime(self.lifetime)
     }
 }
@@ -592,7 +592,7 @@ impl K5Ctx for ServerCtx {
         self.unwrap_iov(buf.len(), &mut buf)
     }
 
-    fn ttl(&self) -> Result<Duration> {
+    fn ttl(&mut self) -> Result<Duration> {
         convert_lifetime(self.lifetime)
     }
 }
