@@ -1,9 +1,9 @@
 use super::{K5Ctx, K5ServerCtx};
 use anyhow::{Error, Result};
 use bytes::{self, Buf as _, buf::Chain};
-#[cfg(feature = "krb5_iov")]
+#[cfg(feature = "iov")]
 use bytes::BytesMut;
-#[cfg(feature = "krb5_iov")]
+#[cfg(feature = "iov")]
 use libgssapi::util::{GssIov, GssIovFake, GssIovType};
 use libgssapi::{
     context::{
@@ -17,7 +17,7 @@ use libgssapi::{
 };
 use std::time::Duration;
 
-#[cfg(feature = "krb5_iov")]
+#[cfg(feature = "iov")]
 fn wrap_iov(
     ctx: &impl SecurityContext,
     encrypt: bool,
@@ -45,7 +45,7 @@ fn wrap_iov(
     Ok(ctx.wrap_iov(encrypt, &mut iovs)?)
 }
 
-#[cfg(not(feature = "krb5_iov"))]
+#[cfg(not(feature = "iov"))]
 fn wrap_iov(
     ctx: &impl SecurityContext,
     encrypt: bool,
@@ -59,7 +59,7 @@ fn wrap_iov(
     Ok(data.extend_from_slice(&*token))
 }
 
-#[cfg(feature = "krb5_iov")]
+#[cfg(feature = "iov")]
 fn unwrap_iov(
     ctx: &impl SecurityContext,
     len: usize,
@@ -81,7 +81,7 @@ fn unwrap_iov(
     Ok(data) // return the decrypted contents
 }
 
-#[cfg(not(feature = "krb5_iov"))]
+#[cfg(not(feature = "iov"))]
 fn unwrap_iov(
     ctx: &impl SecurityContext,
     len: usize,
