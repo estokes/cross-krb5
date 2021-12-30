@@ -16,7 +16,8 @@ default = ["iov"]
 iov = ["libgssapi/iov"]
 
 [target.'cfg(unix)'.dependencies.libgssapi]
-version = "0.4"
+version = "0.5"
+path = "../libgssapi/libgssapi"
 default_features = false
 
 [target.'cfg(windows)'.dependencies.windows]
