@@ -73,8 +73,7 @@ pub trait K5Ctx {
     /// as such you must use some kind of `writev` implementation to
     /// properly send it. You can use tokio's `write_buf` directly, or
     /// you can extract the iovecs for a direct call to `writev` using
-    /// `bytes::Buf::chunks_vectored`. If you don't want to deal with
-    /// iovecs use `wrap`, which does the same thing only slower.
+    /// `bytes::Buf::chunks_vectored`.
     ///
     /// If feature `krb5_iov` isn't enabled (it's in the default set)
     /// then the underlying functionaly will be emulated, and there
