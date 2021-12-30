@@ -1,7 +1,6 @@
 use super::{K5Ctx, K5ServerCtx};
 use anyhow::{anyhow, bail, Result};
-use bytes::{Buf, BytesMut};
-use parking_lot::Mutex;
+use bytes::{buf::Chain, Buf, BytesMut};
 use std::{
     default::Default,
     ffi::{c_void, OsString},
@@ -9,7 +8,6 @@ use std::{
     ops::Drop,
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
-    sync::Arc,
     time::Duration,
 };
 use windows::Win32::{
@@ -292,7 +290,7 @@ fn convert_lifetime(expires: i64) -> Result<Duration> {
     }
 }
 
-struct ClientCtxInner {
+pub struct ClientCtx {
     ctx: SecHandle,
     cred: Cred,
     target: Vec<u16>,
@@ -301,18 +299,17 @@ struct ClientCtxInner {
     buf: Vec<u8>,
     done: bool,
     sizes: SecPkgContext_Sizes,
+    header: BytesMut,
+    padding: BytesMut,
 }
 
-impl Drop for ClientCtxInner {
+impl Drop for ClientCtx {
     fn drop(&mut self) {
         unsafe {
             DeleteSecurityContext(&mut self.ctx as *mut _);
         }
     }
 }
-
-#[derive(Clone)]
-pub struct ClientCtx(Arc<Mutex<ClientCtxInner>>);
 
 impl fmt::Debug for ClientCtx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -322,7 +319,7 @@ impl fmt::Debug for ClientCtx {
 
 impl ClientCtx {
     pub fn new(principal: Option<&str>, target_principal: &str) -> Result<Self> {
-        Ok(ClientCtx(Arc::new(Mutex::new(ClientCtxInner {
+        Ok(ClientCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, false)?,
             target: str_to_wstr(target_principal),
@@ -331,22 +328,22 @@ impl ClientCtx {
             buf: alloc_krb5_buf()?,
             done: false,
             sizes: SecPkgContext_Sizes::default(),
-        }))))
+            header: BytesMut::new(),
+            padding: BytesMut::new(),
+        })
     }
 
-    fn do_step(&self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
-        let mut guard = self.0.lock();
-        let inner = &mut *guard;
-        if inner.done {
+    fn do_step(&mut self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
+        if self.done {
             return Ok(None);
         }
-        for i in 0..inner.buf.len() {
-            inner.buf[i] = 0;
+        for i in 0..self.buf.len() {
+            self.buf[i] = 0;
         }
         let mut out_buf = SecBuffer {
-            cbBuffer: inner.buf.len() as u32,
+            cbBuffer: self.buf.len() as u32,
             BufferType: SECBUFFER_TOKEN,
-            pvBuffer: inner.buf.as_mut_ptr() as *mut _,
+            pvBuffer: self.buf.as_mut_ptr() as *mut _,
         };
         let mut out_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
@@ -366,23 +363,23 @@ impl ClientCtx {
             pBuffers: &mut in_buf as *mut _,
         };
         let ctx_ptr =
-            if tok.is_none() { ptr::null_mut() } else { &mut inner.ctx as *mut _ };
+            if tok.is_none() { ptr::null_mut() } else { &mut self.ctx as *mut _ };
         let in_buf_ptr =
             if tok.is_some() { &mut in_buf_desc as *mut _ } else { ptr::null_mut() };
         let res = unsafe {
             InitializeSecurityContextW(
-                &mut inner.cred.0 as *mut _,
+                &mut self.cred.0 as *mut _,
                 ctx_ptr,
-                inner.target.as_mut_ptr(),
+                self.target.as_mut_ptr(),
                 ISC_REQ_CONFIDENTIALITY | ISC_REQ_MUTUAL_AUTH,
                 0,
                 SECURITY_NATIVE_DREP,
                 in_buf_ptr,
                 0,
-                &mut inner.ctx as *mut _,
+                &mut self.ctx as *mut _,
                 &mut out_buf_desc as *mut _,
-                &mut inner.attrs as *mut _,
-                &mut inner.lifetime as *mut _,
+                &mut self.attrs as *mut _,
+                &mut self.lifetime as *mut _,
             )
         };
         if failed(res) {
@@ -390,8 +387,8 @@ impl ClientCtx {
         }
         let res = res as u32;
         if res == SEC_E_OK.0 {
-            query_pkg_sizes(&mut inner.ctx, &mut inner.sizes)?;
-            inner.done = true;
+            query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
+            self.done = true;
         }
         if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
             let res = unsafe { CompleteAuthToken(ctx_ptr, &mut out_buf_desc as *mut _) };
@@ -400,8 +397,8 @@ impl ClientCtx {
             }
         }
         if out_buf.cbBuffer > 0 {
-            Ok(Some(BytesMut::from(&inner.buf[0..(out_buf.cbBuffer as usize)])))
-        } else if inner.done {
+            Ok(Some(BytesMut::from(&self.buf[0..(out_buf.cbBuffer as usize)])))
+        } else if self.done {
             Ok(None)
         } else {
             bail!("ClientCtx::step no token was generated but we are not done")
@@ -410,47 +407,44 @@ impl ClientCtx {
 }
 
 impl K5Ctx for ClientCtx {
-    type Buf = BytesMut;
+    type Buffer = BytesMut;
+    type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
-    fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
+    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
         self.do_step(token)
     }
 
-    fn wrap(&self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
-        let mut guard = self.0.lock();
-        let inner = &mut *guard;
-        wrap(&mut inner.ctx, &inner.sizes, encrypt, msg)
+    fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
+        wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
 
-    fn wrap_iov(
-        &self,
-        encrypt: bool,
-        header: &mut BytesMut,
-        data: &mut BytesMut,
-        padding: &mut BytesMut,
-        _trailer: &mut BytesMut,
-    ) -> Result<()> {
-        let mut guard = self.0.lock();
-        let inner = &mut *guard;
-        wrap_iov(&mut inner.ctx, &mut inner.sizes, encrypt, header, data, padding)
+    fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        wrap_iov(
+            &mut self.ctx,
+            &mut self.sizes,
+            encrypt,
+            &mut self.header,
+            &mut msg,
+            &mut self.padding,
+        )?;
+        Ok(self.header.split().chain(msg.chain(self.padding.split())))
     }
 
-    fn unwrap_iov(&self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-        let mut inner = self.0.lock();
-        unwrap_iov(&mut inner.ctx, len, msg)
+    fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+        unwrap_iov(&mut self.ctx, len, msg)
     }
 
-    fn unwrap(&self, msg: &[u8]) -> Result<BytesMut> {
+    fn unwrap(&mut self, msg: &[u8]) -> Result<BytesMut> {
         let mut buf = BytesMut::from(msg);
         self.unwrap_iov(buf.len(), &mut buf)
     }
 
     fn ttl(&self) -> Result<Duration> {
-        convert_lifetime(self.0.lock().lifetime)
+        convert_lifetime(self.lifetime)
     }
 }
 
-struct ServerCtxInner {
+pub struct ServerCtx {
     ctx: SecHandle,
     cred: Cred,
     buf: Vec<u8>,
@@ -458,18 +452,17 @@ struct ServerCtxInner {
     lifetime: i64,
     done: bool,
     sizes: SecPkgContext_Sizes,
+    header: BytesMut,
+    padding: BytesMut,
 }
 
-impl Drop for ServerCtxInner {
+impl Drop for ServerCtx {
     fn drop(&mut self) {
         unsafe {
             DeleteSecurityContext(&mut self.ctx as *mut _);
         }
     }
 }
-
-#[derive(Clone)]
-pub struct ServerCtx(Arc<Mutex<ServerCtxInner>>);
 
 impl fmt::Debug for ServerCtx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -479,7 +472,7 @@ impl fmt::Debug for ServerCtx {
 
 impl ServerCtx {
     pub fn new(principal: Option<&str>) -> Result<Self> {
-        Ok(ServerCtx(Arc::new(Mutex::new(ServerCtxInner {
+        Ok(ServerCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, true)?,
             buf: alloc_krb5_buf()?,
@@ -487,23 +480,23 @@ impl ServerCtx {
             lifetime: 0,
             done: false,
             sizes: SecPkgContext_Sizes::default(),
-        }))))
+            header: BytesMut::new(),
+            padding: BytesMut::new(),
+        })
     }
 
-    fn do_step(&self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
+    fn do_step(&mut self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
         let tok = tok.ok_or_else(|| anyhow!("no token supplied"))?;
-        let mut guard = self.0.lock();
-        let inner = &mut *guard;
-        if inner.done {
+        if self.done {
             return Ok(None);
         }
-        for i in 0..inner.buf.len() {
-            inner.buf[i] = 0;
+        for i in 0..self.buf.len() {
+            self.buf[i] = 0;
         }
         let mut out_buf = SecBuffer {
-            cbBuffer: inner.buf.len() as u32,
+            cbBuffer: self.buf.len() as u32,
             BufferType: SECBUFFER_TOKEN,
-            pvBuffer: inner.buf.as_mut_ptr() as *mut _,
+            pvBuffer: self.buf.as_mut_ptr() as *mut _,
         };
         let mut out_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
@@ -522,24 +515,24 @@ impl ServerCtx {
         };
         let dfsh = SecHandle::default();
         let ctx_ptr =
-            if inner.ctx.dwLower == dfsh.dwLower && inner.ctx.dwUpper == dfsh.dwUpper {
+            if self.ctx.dwLower == dfsh.dwLower && self.ctx.dwUpper == dfsh.dwUpper {
                 ptr::null_mut()
             } else {
-                &mut inner.ctx as *mut _
+                &mut self.ctx as *mut _
             };
         let res = unsafe {
             AcceptSecurityContext(
-                &mut inner.cred.0 as *mut _,
+                &mut self.cred.0 as *mut _,
                 ctx_ptr,
                 &mut in_buf_desc as *mut _,
                 ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ(
                     ISC_REQ_CONFIDENTIALITY | ISC_REQ_MUTUAL_AUTH,
                 ),
                 SECURITY_NATIVE_DREP,
-                &mut inner.ctx as *mut _,
+                &mut self.ctx as *mut _,
                 &mut out_buf_desc as *mut _,
-                &mut inner.attrs as *mut _,
-                &mut inner.lifetime as *mut _,
+                &mut self.attrs as *mut _,
+                &mut self.lifetime as *mut _,
             )
         };
         if failed(res) {
@@ -547,8 +540,8 @@ impl ServerCtx {
         }
         let res = res as u32;
         if res == SEC_E_OK.0 {
-            query_pkg_sizes(&mut inner.ctx, &mut inner.sizes)?;
-            inner.done = true;
+            query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
+            self.done = true;
         }
         if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
             let res = unsafe { CompleteAuthToken(ctx_ptr, &mut out_buf_desc as *mut _) };
@@ -557,8 +550,8 @@ impl ServerCtx {
             }
         }
         if out_buf.cbBuffer > 0 {
-            Ok(Some(BytesMut::from(&inner.buf[0..(out_buf.cbBuffer as usize)])))
-        } else if inner.done {
+            Ok(Some(BytesMut::from(&self.buf[0..(out_buf.cbBuffer as usize)])))
+        } else if self.done {
             Ok(None)
         } else {
             bail!("ServerCtx::step no token was generated but we are not done")
@@ -567,53 +560,49 @@ impl ServerCtx {
 }
 
 impl K5Ctx for ServerCtx {
-    type Buf = BytesMut;
+    type Buffer = BytesMut;
+    type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
-    fn step(&self, token: Option<&[u8]>) -> Result<Option<Self::Buf>> {
+    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
         self.do_step(token)
     }
 
-    fn wrap(&self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
-        let mut guard = self.0.lock();
-        let inner = &mut *guard;
-        wrap(&mut inner.ctx, &inner.sizes, encrypt, msg)
+    fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
+        wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
 
-    fn wrap_iov(
-        &self,
-        encrypt: bool,
-        header: &mut BytesMut,
-        data: &mut BytesMut,
-        padding: &mut BytesMut,
-        _trailer: &mut BytesMut,
-    ) -> Result<()> {
-        let mut guard = self.0.lock();
-        let inner = &mut *guard;
-        wrap_iov(&mut inner.ctx, &mut inner.sizes, encrypt, header, data, padding)
+    fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        wrap_iov(
+            &mut self.ctx,
+            &mut self.sizes,
+            encrypt,
+            &mut self.header,
+            &mut msg,
+            &mut self.padding,
+        )?;
+        Ok(self.header.split().chain(msg.chain(self.padding.split())))
     }
 
-    fn unwrap_iov(&self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-        let mut inner = self.0.lock();
-        unwrap_iov(&mut inner.ctx, len, msg)
+    fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+        unwrap_iov(&mut self.ctx, len, msg)
     }
 
-    fn unwrap(&self, msg: &[u8]) -> Result<BytesMut> {
+    fn unwrap(&mut self, msg: &[u8]) -> Result<BytesMut> {
         let mut buf = BytesMut::from(msg);
         self.unwrap_iov(buf.len(), &mut buf)
     }
 
     fn ttl(&self) -> Result<Duration> {
-        convert_lifetime(self.0.lock().lifetime)
+        convert_lifetime(self.lifetime)
     }
 }
 
 impl K5ServerCtx for ServerCtx {
-    fn client(&self) -> Result<String> {
+    fn client(&mut self) -> Result<String> {
         let mut names = SecPkgContext_NativeNamesW::default();
-        let mut inner = self.0.lock();
         unsafe {
             let res = QueryContextAttributesW(
-                &mut inner.ctx as *mut _,
+                &mut self.ctx as *mut _,
                 SECPKG_ATTR_NATIVE_NAMES,
                 &mut names as *mut _ as *mut c_void,
             );

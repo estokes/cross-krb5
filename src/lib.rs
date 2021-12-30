@@ -96,7 +96,7 @@ pub trait K5Ctx {
     fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut>;
 
     /// Return the remaining time this session has to live
-    fn ttl(&mut self) -> Result<Duration>;
+    fn ttl(&self) -> Result<Duration>;
 }
 
 pub trait K5ServerCtx: K5Ctx {
@@ -118,7 +118,7 @@ mod windows;
 use crate::windows::{ClientCtx as ClientCtxImpl, ServerCtx as ServerCtxImpl};
 
 /// A Kerberos client context
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ClientCtx(ClientCtxImpl);
 
 impl ClientCtx {
@@ -158,13 +158,13 @@ impl K5Ctx for ClientCtx {
         K5Ctx::unwrap_iov(&mut self.0, len, msg)
     }
 
-    fn ttl(&mut self) -> Result<Duration> {
-        K5Ctx::ttl(&mut self.0)
+    fn ttl(&self) -> Result<Duration> {
+        K5Ctx::ttl(&self.0)
     }
 }
 
 /// A Kerberos server context
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ServerCtx(ServerCtxImpl);
 
 impl K5Ctx for ServerCtx {
@@ -191,8 +191,8 @@ impl K5Ctx for ServerCtx {
         K5Ctx::unwrap_iov(&mut self.0, len, msg)
     }
 
-    fn ttl(&mut self) -> Result<Duration> {
-        K5Ctx::ttl(&mut self.0)
+    fn ttl(&self) -> Result<Duration> {
+        K5Ctx::ttl(&self.0)
     }
 }
 
