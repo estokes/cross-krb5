@@ -75,9 +75,9 @@ pub trait K5Ctx {
     /// you can extract the iovecs for a direct call to `writev` using
     /// `bytes::Buf::chunks_vectored`.
     ///
-    /// If feature `krb5_iov` isn't enabled (it's in the default set)
+    /// If feature `iov` isn't enabled (it's in the default set)
     /// then the underlying functionaly will be emulated, and there
-    /// will be no performance gain. `krb5_iov` is currently not
+    /// will be no performance gain. `iov` is currently not
     /// available on Mac OS, and compilation will fail if you try to
     /// enable it. On OSes where it is supported using
     /// wrap_iov/unwrap_iov is generally in the neighborhood of 2x to

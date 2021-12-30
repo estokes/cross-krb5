@@ -12,8 +12,8 @@ keywords = ["kerberos", "krb5", "gssapi", "sspi", "authentication"]
 categories = ["cryptography"]
 
 [features]
-default = ["krb5_iov"]
-krb5_iov = ["libgssapi/iov"]
+default = ["iov"]
+iov = ["libgssapi/iov"]
 
 [target.'cfg(unix)'.dependencies.libgssapi]
 version = "0.4"
