@@ -36,4 +36,4 @@ features = [
 [dependencies]
 anyhow = "1"
 bytes = "1"
-parking_lot = "0.11"
+

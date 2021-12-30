@@ -19,7 +19,7 @@ use std::time::Duration;
 
 #[cfg(feature = "iov")]
 fn wrap_iov(
-    ctx: &impl SecurityContext,
+    ctx: &mut impl SecurityContext,
     encrypt: bool,
     header: &mut BytesMut,
     data: &mut BytesMut,
@@ -61,7 +61,7 @@ fn wrap_iov(
 
 #[cfg(feature = "iov")]
 fn unwrap_iov(
-    ctx: &impl SecurityContext,
+    ctx: &mut impl SecurityContext,
     len: usize,
     msg: &mut BytesMut,
 ) -> Result<BytesMut> {
@@ -94,7 +94,7 @@ fn unwrap_iov(
     Ok(msg)
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ClientCtx {
     gss: GssClientCtx,
     header: BytesMut,
@@ -146,7 +146,7 @@ impl K5Ctx for ClientCtx {
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
         wrap_iov(
-            &self.gss,
+            &mut self.gss,
             encrypt,
             &mut self.header,
             &mut msg,
@@ -164,7 +164,7 @@ impl K5Ctx for ClientCtx {
     }
 
     fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-        unwrap_iov(&self.gss, len, msg)
+        unwrap_iov(&mut self.gss, len, msg)
     }
 
     fn ttl(&mut self) -> Result<Duration> {
@@ -172,7 +172,7 @@ impl K5Ctx for ClientCtx {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ServerCtx {
     gss: GssServerCtx,
     header: BytesMut,
@@ -220,7 +220,7 @@ impl K5Ctx for ServerCtx {
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
         wrap_iov(
-            &self.gss,
+            &mut self.gss,
             encrypt,
             &mut self.header,
             &mut msg,
@@ -238,7 +238,7 @@ impl K5Ctx for ServerCtx {
     }
 
     fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-        unwrap_iov(&self.gss, len, msg)
+        unwrap_iov(&mut self.gss, len, msg)
     }
 
     fn ttl(&mut self) -> Result<Duration> {

@@ -95,7 +95,7 @@ pub trait K5Ctx {
     fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut>;
 
     /// Return the remaining time this session has to live
-    fn ttl(&self) -> Result<Duration>;
+    fn ttl(&mut self) -> Result<Duration>;
 }
 
 pub trait K5ServerCtx: K5Ctx {
@@ -157,8 +157,8 @@ impl K5Ctx for ClientCtx {
         K5Ctx::unwrap_iov(&mut self.0, len, msg)
     }
 
-    fn ttl(&self) -> Result<Duration> {
-        K5Ctx::ttl(&self.0)
+    fn ttl(&mut self) -> Result<Duration> {
+        K5Ctx::ttl(&mut self.0)
     }
 }
 
@@ -190,8 +190,8 @@ impl K5Ctx for ServerCtx {
         K5Ctx::unwrap_iov(&mut self.0, len, msg)
     }
 
-    fn ttl(&self) -> Result<Duration> {
-        K5Ctx::ttl(&self.0)
+    fn ttl(&mut self) -> Result<Duration> {
+        K5Ctx::ttl(&mut self.0)
     }
 }
 
