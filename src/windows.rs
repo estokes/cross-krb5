@@ -5,7 +5,7 @@ use std::{
     default::Default,
     ffi::{c_void, OsString},
     fmt, mem,
-    ops::Drop,
+    ops::{Deref, Drop},
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
     time::Duration,
@@ -290,6 +290,18 @@ fn convert_lifetime(expires: i64) -> Result<Duration> {
     }
 }
 
+#[derive(Debug)]
+pub struct PendingClientCtx(ClientCtx);
+
+impl PendingClientCtx {
+    pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
+        if self.0.do_step(Some(token))?.is_some() {
+            bail!("unexpected second token")
+        }
+        Ok(self.0)
+    }
+}
+
 pub struct ClientCtx {
     ctx: SecHandle,
     cred: Cred,
@@ -318,8 +330,8 @@ impl fmt::Debug for ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn new(principal: Option<&str>, target_principal: &str) -> Result<Self> {
-        Ok(ClientCtx {
+    pub fn new(principal: Option<&str>, target_principal: &str) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+        let mut ctx = ClientCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, false)?,
             target: str_to_wstr(target_principal),
@@ -330,7 +342,9 @@ impl ClientCtx {
             sizes: SecPkgContext_Sizes::default(),
             header: BytesMut::new(),
             padding: BytesMut::new(),
-        })
+        };
+        let token = ctx.do_step(None)?.ok_or_else(|| anyhow!("expected token"))?;
+        Ok((PendingClientCtx(ctx), token))
     }
 
     fn do_step(&mut self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
@@ -410,10 +424,6 @@ impl K5Ctx for ClientCtx {
     type Buffer = BytesMut;
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
-    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
-        self.do_step(token)
-    }
-
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
         wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
@@ -471,8 +481,8 @@ impl fmt::Debug for ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn new(principal: Option<&str>) -> Result<Self> {
-        Ok(ServerCtx {
+    pub fn new(principal: Option<&str>, token: &[u8]) -> Result<(Self, impl Deref<Target = [u8]>)> {
+        let mut ctx = ServerCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, true)?,
             buf: alloc_krb5_buf()?,
@@ -482,7 +492,9 @@ impl ServerCtx {
             sizes: SecPkgContext_Sizes::default(),
             header: BytesMut::new(),
             padding: BytesMut::new(),
-        })
+        };
+        let token = ctx.do_step(Some(token))?.ok_or_else(|| anyhow!("expected token"))?;
+        Ok((ctx, token))
     }
 
     fn do_step(&mut self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
@@ -562,10 +574,6 @@ impl ServerCtx {
 impl K5Ctx for ServerCtx {
     type Buffer = BytesMut;
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
-
-    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
-        self.do_step(token)
-    }
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
         wrap(&mut self.ctx, &self.sizes, encrypt, msg)
