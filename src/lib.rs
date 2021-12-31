@@ -109,6 +109,7 @@ use crate::windows::{
     ServerCtx as ServerCtxImpl,
 };
 
+/// a half initialized client context
 pub struct PendingClientCtx(PendingClientCtxImpl);
 
 impl PendingClientCtx {
@@ -129,7 +130,7 @@ impl ClientCtx {
     /// current process will be used. `target_principal` must be the
     /// service principal name of the service you intend to
     /// communicate with. This should be an spn as described by
-    /// GSSAPI, `service/host@REALM`
+    /// GSSAPI, e.g. `service/host@REALM`
     ///
     /// On success a `PendingClientCtx` and a token to be sent to the
     /// server will be returned. The server will accept the client
