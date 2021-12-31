@@ -1,7 +1,7 @@
-//! Cross platform Kerberos 5
+//! # Cross platform Kerberos 5 Interface
 //!
 //! cross-krb5 is a simplified and safe interface for basic Kerberos 5
-//! services on Windows and Unix like OSes. It provides most of the
+//! services on Windows and Unix. It provides most of the
 //! flexibility of using gssapi and sspi directly, but with the
 //! reduced api complexity that comes from specifically targeting only
 //! the Kerberos 5 mechanism.
@@ -14,18 +14,28 @@
 //! # Example
 //! ```no_run
 //! # use anyhow::Result;
+//! # fn run(spn: &str) -> Result<()> {
 //! use cross_krb5::{ClientCtx, ServerCtx, K5Ctx, K5ServerCtx};
-//!
-//!# fn run(spn: &str) -> Result<()> {
-//! // setup the server context using the service principal name
-//! // The current user will request a service ticket for the spn
-//! let (pending, token) = ClientCtx::new(None, spn)?;
-//! let (mut server, token) = ServerCtx::new(Some(spn), &*token)?;
+//! use cross_krb5::{ClientCtx, ServerCtx, K5Ctx, K5ServerCtx};
+//! 
+//! // make a pending context and a token to connect to `service/host@REALM`
+//! let (pending, token) = ClientCtx::initiate(None, "service/host@REALM")?;
+//! 
+//! // setup the server context for `service/host@REALM`. The token from the client
+//! // is accepted, and, if valid, the server end of the context and a token
+//! // for the client will be created.
+//! let (mut server, token) = ServerCtx::accept(Some("service/host@REALM"), &*token)?;
+//! 
+//! // use the server supplied token to finish initializing the pending client context.
+//! // Now encrypted communication between the two contexts is possible, and mutual
+//! // authentication has succeeded.
 //! let mut client = pending.finish(&*token)?;
-//! // now that the sesion is established the client and server can
-//! // encrypt messages to each other.
+//! 
+//! // send secret messages
 //! let secret_msg = client.wrap(true, b"super secret message")?;
 //! println!("{}", String::from_utf8_lossy(&server.unwrap(&*secret_msg)?));
+//! 
+//! // ... profit!
 //!# Ok(())
 //!# }
 //! ```
@@ -115,23 +125,22 @@ impl PendingClientCtx {
 pub struct ClientCtx(ClientCtxImpl);
 
 impl ClientCtx {
-    /// Create a new client context. If `principal` is `None` then the
+    /// Initiate a client context to `target_principal`. If `principal` is `None` then the
     /// credentials of the user running current process will be
-    /// used. `target_principal` is the service principal name of the
+    /// used. `target_principal` must be the service principal name of the
     /// service you intend to communicate with. This should be an spn
     /// as described by GSSAPI, `service/host@REALM`
-    /// e.g. `"publish/ken-ohki.ryu-oh.org@RYU-OH.ORG"`.
     ///
     /// On success a `PendingClientCtx` and a token to be sent to the
-    /// server will be returned. The server will process the client
-    /// token, and return a token of it's own, which must be passed to
+    /// server will be returned. The server will accept the client
+    /// token, and, if valid, will return a token of it's own, which must be passed to
     /// the `PendingClientCtx::finish` method to complete the
     /// initialization.
-    pub fn new(
+    pub fn initiate(
         principal: Option<&str>,
         target_principal: &str,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let (pending, token) = ClientCtxImpl::new(principal, target_principal)?;
+        let (pending, token) = ClientCtxImpl::initiate(principal, target_principal)?;
         Ok((PendingClientCtx(pending), token))
     }
 }
@@ -191,20 +200,19 @@ impl K5Ctx for ServerCtx {
 }
 
 impl ServerCtx {
-    /// Create a new server context. `principal` should be the service
-    /// principal name assigned to the service this context is
-    /// associated with. This is equivelent to the `target_principal`
+    /// Accept a client request for `principal`. `principal` should be the service
+    /// principal name assigned to the service the client is requesting. This is equivelent to the `target_principal`
     /// speficied in the client context. If it is left as `None` it
     /// will use the user running the current process. `token` should
     /// be the token received from the client that initiated the
     /// request for service. If the token sent by the client is valid,
     /// then the context and a token to send back to the client will
     /// be returned.
-    pub fn new(
+    pub fn accept(
         principal: Option<&str>,
         token: &[u8],
     ) -> Result<(Self, impl Deref<Target = [u8]>)> {
-        let (ctx, token) = ServerCtxImpl::new(principal, token)?;
+        let (ctx, token) = ServerCtxImpl::accept(principal, token)?;
         Ok((ServerCtx(ctx), token))
     }
 }

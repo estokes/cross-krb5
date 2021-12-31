@@ -330,7 +330,7 @@ impl fmt::Debug for ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn new(principal: Option<&str>, target_principal: &str) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+    pub fn initiate(principal: Option<&str>, target_principal: &str) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let mut ctx = ClientCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, false)?,
@@ -481,7 +481,7 @@ impl fmt::Debug for ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn new(principal: Option<&str>, token: &[u8]) -> Result<(Self, impl Deref<Target = [u8]>)> {
+    pub fn accept(principal: Option<&str>, token: &[u8]) -> Result<(Self, impl Deref<Target = [u8]>)> {
         let mut ctx = ServerCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, true)?,

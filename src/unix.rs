@@ -119,7 +119,7 @@ pub struct ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn new(
+    pub fn initiate(
         principal: Option<&str>,
         target_principal: &str,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
@@ -193,7 +193,7 @@ pub struct ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn new(
+    pub fn accept(
         principal: Option<&str>,
         token: &[u8],
     ) -> Result<(ServerCtx, impl Deref<Target = [u8]>)> {
