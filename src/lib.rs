@@ -1,10 +1,10 @@
 //! Cross platform Kerberos 5
 //!
-//! cross-krb5 is a single, simplified, and safe API for basic
-//! Kerberos 5 services on Windows, and Unix like OSes. It provides
-//! most of the flexibility of using gssapi and sspi directly, but
-//! with the reduced complexity that comes from specifically targeting
-//! only Kerberos.
+//! cross-krb5 is a simplified and safe interface for basic Kerberos 5
+//! services on Windows and Unix like OSes. It provides most of the
+//! flexibility of using gssapi and sspi directly, but with the
+//! reduced api complexity that comes from specifically targeting only
+//! the Kerberos 5 mechanism.
 //!
 //! As well as providing a uniform API, services using cross-krb5
 //! should interoperate across all the supported OSes transparantly,
@@ -18,22 +18,10 @@
 //!
 //!# fn run(spn: &str) -> Result<()> {
 //! // setup the server context using the service principal name
-//! let mut server = ServerCtx::new(Some(spn))?;
 //! // The current user will request a service ticket for the spn
-//! let mut client = ClientCtx::new(None, spn)?;
-//! let mut server_tok: Option<<ClientCtx as K5Ctx>::Buffer> = None;
-//! loop {
-//!     // the client and server exchange tokens until one of them is done
-//!     match client.step(server_tok.as_ref().map(|b| &**b))? {
-//!         None => break,
-//!         Some(client_tok) => match server.step(Some(&*client_tok))? {
-//!             None => break,
-//!             Some(tok) => {
-//!                 server_tok = Some(tok);
-//!             }
-//!         },
-//!     }
-//! }
+//! let (pending, token) = ClientCtx::new(None, spn)?;
+//! let (mut server, token) = ServerCtx::new(Some(spn), &*token)?;
+//! let mut client = pending.finish(&*token)?;
 //! // now that the sesion is established the client and server can
 //! // encrypt messages to each other.
 //! let secret_msg = client.wrap(true, b"super secret message")?;
@@ -44,21 +32,11 @@
 
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
-use std::{time::Duration, ops::Deref};
+use std::{ops::Deref, time::Duration};
 
 pub trait K5Ctx {
     type Buffer: Deref<Target = [u8]> + Send + Sync;
     type IOVBuffer: Buf + Send + Sync;
-
-    /// perform 1 step of initialization. `token` is the token you
-    /// received from the other side, or `None` if you didn't receive
-    /// one. If initialization is finished then `step` will return
-    /// `Ok(None)`, and at that point the context is ready to use.  If
-    /// `step` returns `Ok(Some(buf))` then initialization isn't
-    /// finished and you are expected to send the contents of that
-    /// buffer to the other side in order to finish it.  This may go
-    /// on for several rounds of back and forth.
-    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>>;
 
     /// Wrap the specified message for sending to the other side. If
     /// `encrypt` is true then the contents will be encrypted. Even if
@@ -108,13 +86,29 @@ pub trait K5ServerCtx: K5Ctx {
 mod unix;
 
 #[cfg(unix)]
-use crate::unix::{ClientCtx as ClientCtxImpl, ServerCtx as ServerCtxImpl};
+use crate::unix::{
+    ClientCtx as ClientCtxImpl, PendingClientCtx as PendingClientCtxImpl,
+    ServerCtx as ServerCtxImpl,
+};
 
 #[cfg(windows)]
 mod windows;
 
 #[cfg(windows)]
-use crate::windows::{ClientCtx as ClientCtxImpl, ServerCtx as ServerCtxImpl};
+use crate::windows::{
+    ClientCtx as ClientCtxImpl, PendingClientCtx as PendingClientCtxImpl,
+    ServerCtx as ServerCtxImpl,
+};
+
+pub struct PendingClientCtx(PendingClientCtxImpl);
+
+impl PendingClientCtx {
+    /// Finish initialization of the client context using the token
+    /// sent by the server.
+    pub fn finish(self, token: &[u8]) -> Result<ClientCtx> {
+        Ok(ClientCtx(self.0.finish(token)?))
+    }
+}
 
 /// A Kerberos client context
 #[derive(Debug)]
@@ -125,21 +119,26 @@ impl ClientCtx {
     /// credentials of the user running current process will be
     /// used. `target_principal` is the service principal name of the
     /// service you intend to communicate with. This should be an spn
-    /// as described by GSSAPI,
-    /// e.g. `"publish/ken-ohki.ryu-oh.org@RYU-OH.ORG"`, the general
-    /// form is `service/host@REALM`
-    pub fn new(principal: Option<&str>, target_principal: &str) -> Result<Self> {
-        Ok(ClientCtx(ClientCtxImpl::new(principal, target_principal)?))
+    /// as described by GSSAPI, `service/host@REALM`
+    /// e.g. `"publish/ken-ohki.ryu-oh.org@RYU-OH.ORG"`.
+    ///
+    /// On success a `PendingClientCtx` and a token to be sent to the
+    /// server will be returned. The server will process the client
+    /// token, and return a token of it's own, which must be passed to
+    /// the `PendingClientCtx::finish` method to complete the
+    /// initialization.
+    pub fn new(
+        principal: Option<&str>,
+        target_principal: &str,
+    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+        let (pending, token) = ClientCtxImpl::new(principal, target_principal)?;
+        Ok((PendingClientCtx(pending), token))
     }
 }
 
 impl K5Ctx for ClientCtx {
     type Buffer = <ClientCtxImpl as K5Ctx>::Buffer;
     type IOVBuffer = <ClientCtxImpl as K5Ctx>::IOVBuffer;
-
-    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
-        K5Ctx::step(&mut self.0, token)
-    }
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
         K5Ctx::wrap(&mut self.0, encrypt, msg)
@@ -170,10 +169,6 @@ impl K5Ctx for ServerCtx {
     type Buffer = <ServerCtxImpl as K5Ctx>::Buffer;
     type IOVBuffer = <ServerCtxImpl as K5Ctx>::IOVBuffer;
 
-    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
-        K5Ctx::step(&mut self.0, token)
-    }
-
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
         K5Ctx::wrap(&mut self.0, encrypt, msg)
     }
@@ -200,9 +195,17 @@ impl ServerCtx {
     /// principal name assigned to the service this context is
     /// associated with. This is equivelent to the `target_principal`
     /// speficied in the client context. If it is left as `None` it
-    /// will use the user running the current process.
-    pub fn new(principal: Option<&str>) -> Result<Self> {
-        Ok(ServerCtx(ServerCtxImpl::new(principal)?))
+    /// will use the user running the current process. `token` should
+    /// be the token received from the client that initiated the
+    /// request for service. If the token sent by the client is valid,
+    /// then the context and a token to send back to the client will
+    /// be returned.
+    pub fn new(
+        principal: Option<&str>,
+        token: &[u8],
+    ) -> Result<(Self, impl Deref<Target = [u8]>)> {
+        let (ctx, token) = ServerCtxImpl::new(principal, token)?;
+        Ok((ServerCtx(ctx), token))
     }
 }
 

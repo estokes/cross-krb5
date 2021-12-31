@@ -1,8 +1,8 @@
 use super::{K5Ctx, K5ServerCtx};
-use anyhow::{Error, Result};
-use bytes::{self, Buf as _, buf::Chain};
+use anyhow::{anyhow, bail, Error, Result};
 #[cfg(feature = "iov")]
 use bytes::BytesMut;
+use bytes::{self, buf::Chain, Buf as _};
 #[cfg(feature = "iov")]
 use libgssapi::util::{GssIov, GssIovFake, GssIovType};
 use libgssapi::{
@@ -10,12 +10,11 @@ use libgssapi::{
         ClientCtx as GssClientCtx, CtxFlags, SecurityContext, ServerCtx as GssServerCtx,
     },
     credential::{Cred, CredUsage},
-    error::{Error as GssError, MajorFlags},
     name::Name,
     oid::{OidSet, GSS_MECH_KRB5, GSS_NT_KRB5_PRINCIPAL},
     util::Buf,
 };
-use std::time::Duration;
+use std::{ops::Deref, time::Duration};
 
 #[cfg(feature = "iov")]
 fn wrap_iov(
@@ -95,6 +94,23 @@ fn unwrap_iov(
 }
 
 #[derive(Debug)]
+pub struct PendingClientCtx(GssClientCtx);
+
+impl PendingClientCtx {
+    pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
+        if self.0.step(Some(token))?.is_some() {
+            bail!("unexpected second client token")
+        }
+        Ok(ClientCtx {
+            gss: self.0,
+            header: BytesMut::new(),
+            padding: BytesMut::new(),
+            trailer: BytesMut::new(),
+        })
+    }
+}
+
+#[derive(Debug)]
 pub struct ClientCtx {
     gss: GssClientCtx,
     header: BytesMut,
@@ -103,7 +119,10 @@ pub struct ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn new(principal: Option<&str>, target_principal: &str) -> Result<Self> {
+    pub fn new(
+        principal: Option<&str>,
+        target_principal: &str,
+    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let name = principal
             .map(|n| {
                 Name::new(n.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
@@ -118,27 +137,20 @@ impl ClientCtx {
             s.add(&GSS_MECH_KRB5)?;
             Cred::acquire(name.as_ref(), None, CredUsage::Initiate, Some(&s))?
         };
-        Ok(ClientCtx {
-            header: BytesMut::new(),
-            padding: BytesMut::new(),
-            trailer: BytesMut::new(),
-            gss: GssClientCtx::new(
-                cred,
-                target,
-                CtxFlags::GSS_C_MUTUAL_FLAG,
-                Some(&GSS_MECH_KRB5),
-            ),
-        })
+        let mut gss = GssClientCtx::new(
+            cred,
+            target,
+            CtxFlags::GSS_C_MUTUAL_FLAG,
+            Some(&GSS_MECH_KRB5),
+        );
+        let token = gss.step(None)?.ok_or_else(|| anyhow!("expected token"))?;
+        Ok((PendingClientCtx(gss), token))
     }
 }
 
 impl K5Ctx for ClientCtx {
     type Buffer = Buf;
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, Chain<BytesMut, BytesMut>>>;
-        
-    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
-        self.gss.step(token).map_err(|e| Error::from(e))
-    }
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
         self.gss.wrap(encrypt, msg).map_err(|e| Error::from(e))
@@ -181,7 +193,10 @@ pub struct ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn new(principal: Option<&str>) -> Result<ServerCtx> {
+    pub fn new(
+        principal: Option<&str>,
+        token: &[u8],
+    ) -> Result<(ServerCtx, impl Deref<Target = [u8]>)> {
         let name = principal
             .map(|principal| -> Result<Name> {
                 Ok(Name::new(principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
@@ -193,26 +208,24 @@ impl ServerCtx {
             s.add(&GSS_MECH_KRB5)?;
             Cred::acquire(name.as_ref(), None, CredUsage::Accept, Some(&s))?
         };
-        Ok(ServerCtx {
+        let mut ctx = ServerCtx {
             gss: GssServerCtx::new(cred),
             header: BytesMut::new(),
             padding: BytesMut::new(),
             trailer: BytesMut::new(),
-        })
+        };
+        let token = ctx
+            .gss
+            .step(token)
+            .map_err(|e| Error::from(e))?
+            .ok_or_else(|| anyhow!("expected token"))?;
+        Ok((ctx, token))
     }
 }
 
 impl K5Ctx for ServerCtx {
     type Buffer = Buf;
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, Chain<BytesMut, BytesMut>>>;
-
-    fn step(&mut self, token: Option<&[u8]>) -> Result<Option<Self::Buffer>> {
-        match token {
-            Some(token) => self.gss.step(token),
-            None => Err(GssError { major: MajorFlags::GSS_S_DEFECTIVE_TOKEN, minor: 0 }),
-        }
-        .map_err(|e| Error::from(e))
-    }
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
         self.gss.wrap(encrypt, msg).map_err(|e| Error::from(e))
