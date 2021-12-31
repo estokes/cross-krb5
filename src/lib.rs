@@ -1,4 +1,4 @@
-//! # Cross platform Kerberos 5 Interface
+//! # Cross Platform Kerberos 5 Interface
 //!
 //! cross-krb5 is a simplified and safe interface for basic Kerberos 5
 //! services on Windows and Unix. It provides most of the flexibility
@@ -7,7 +7,7 @@
 //! Kerberos 5 mechanism.
 //!
 //! As well as providing a uniform API, services using cross-krb5
-//! should interoperate across all the supported OSes transparantly,
+//! should interoperate across all the supported OSes transparently,
 //! and should interoperate with other services assuming they are not
 //! platform specific.
 //!
@@ -15,7 +15,6 @@
 //! ```no_run
 //! # use anyhow::Result;
 //! # fn run(spn: &str) -> Result<()> {
-//! use cross_krb5::{ClientCtx, ServerCtx, K5Ctx, K5ServerCtx};
 //! use cross_krb5::{ClientCtx, ServerCtx, K5Ctx, K5ServerCtx};
 //! 
 //! // make a pending context and a token to connect to `service/host@REALM`
