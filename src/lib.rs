@@ -1,10 +1,10 @@
 //! # Cross platform Kerberos 5 Interface
 //!
 //! cross-krb5 is a simplified and safe interface for basic Kerberos 5
-//! services on Windows and Unix. It provides most of the
-//! flexibility of using gssapi and sspi directly, but with the
-//! reduced api complexity that comes from specifically targeting only
-//! the Kerberos 5 mechanism.
+//! services on Windows and Unix. It provides most of the flexibility
+//! of using gssapi and sspi directly, but with the reduced api
+//! complexity that comes from specifically targeting only the
+//! Kerberos 5 mechanism.
 //!
 //! As well as providing a uniform API, services using cross-krb5
 //! should interoperate across all the supported OSes transparantly,
@@ -21,7 +21,7 @@
 //! // make a pending context and a token to connect to `service/host@REALM`
 //! let (pending, token) = ClientCtx::initiate(None, "service/host@REALM")?;
 //! 
-//! // setup the server context for `service/host@REALM`. The token from the client
+//! // accept the client's token for `service/host@REALM`. The token from the client
 //! // is accepted, and, if valid, the server end of the context and a token
 //! // for the client will be created.
 //! let (mut server, token) = ServerCtx::accept(Some("service/host@REALM"), &*token)?;
@@ -125,17 +125,18 @@ impl PendingClientCtx {
 pub struct ClientCtx(ClientCtxImpl);
 
 impl ClientCtx {
-    /// Initiate a client context to `target_principal`. If `principal` is `None` then the
-    /// credentials of the user running current process will be
-    /// used. `target_principal` must be the service principal name of the
-    /// service you intend to communicate with. This should be an spn
-    /// as described by GSSAPI, `service/host@REALM`
+    /// Initiate a client context to `target_principal`. If
+    /// `principal` is `None` then the credentials of the user running
+    /// current process will be used. `target_principal` must be the
+    /// service principal name of the service you intend to
+    /// communicate with. This should be an spn as described by
+    /// GSSAPI, `service/host@REALM`
     ///
     /// On success a `PendingClientCtx` and a token to be sent to the
     /// server will be returned. The server will accept the client
-    /// token, and, if valid, will return a token of it's own, which must be passed to
-    /// the `PendingClientCtx::finish` method to complete the
-    /// initialization.
+    /// token, and, if valid, will return a token of it's own, which
+    /// must be passed to the `PendingClientCtx::finish` method to
+    /// complete the initialization.
     pub fn initiate(
         principal: Option<&str>,
         target_principal: &str,
@@ -200,14 +201,14 @@ impl K5Ctx for ServerCtx {
 }
 
 impl ServerCtx {
-    /// Accept a client request for `principal`. `principal` should be the service
-    /// principal name assigned to the service the client is requesting. This is equivelent to the `target_principal`
-    /// speficied in the client context. If it is left as `None` it
-    /// will use the user running the current process. `token` should
-    /// be the token received from the client that initiated the
-    /// request for service. If the token sent by the client is valid,
-    /// then the context and a token to send back to the client will
-    /// be returned.
+    /// Accept a client request for `principal`. `principal` should be
+    /// the service principal name assigned to the service the client
+    /// is requesting.  If it is left as `None` it will use the user
+    /// running the current process. `token` should be the token
+    /// received from the client that initiated the request for
+    /// service. If the token sent by the client is valid, then the
+    /// context and a token to send back to the client will be
+    /// returned.
     pub fn accept(
         principal: Option<&str>,
         token: &[u8],
