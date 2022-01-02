@@ -1,6 +1,5 @@
 use super::{K5Ctx, K5ServerCtx};
 use anyhow::{anyhow, bail, Error, Result};
-#[cfg(feature = "iov")]
 use bytes::BytesMut;
 use bytes::{self, buf::Chain, Buf as _};
 #[cfg(feature = "iov")]
@@ -46,7 +45,7 @@ fn wrap_iov(
 
 #[cfg(not(feature = "iov"))]
 fn wrap_iov(
-    ctx: &impl SecurityContext,
+    ctx: &mut impl SecurityContext,
     encrypt: bool,
     _header: &mut BytesMut,
     data: &mut BytesMut,
@@ -82,7 +81,7 @@ fn unwrap_iov(
 
 #[cfg(not(feature = "iov"))]
 fn unwrap_iov(
-    ctx: &impl SecurityContext,
+    ctx: &mut impl SecurityContext,
     len: usize,
     msg: &mut BytesMut,
 ) -> Result<BytesMut> {
