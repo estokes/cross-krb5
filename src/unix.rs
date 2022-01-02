@@ -1,6 +1,5 @@
 use super::{K5Ctx, K5ServerCtx};
 use anyhow::{anyhow, bail, Error, Result};
-#[cfg(feature = "iov")]
 use bytes::BytesMut;
 use bytes::{self, buf::Chain, Buf as _};
 #[cfg(feature = "iov")]
