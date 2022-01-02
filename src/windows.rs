@@ -180,17 +180,17 @@ fn wrap_iov(
         SecBuffer {
             BufferType: SECBUFFER_TOKEN,
             cbBuffer: sizes.cbSecurityTrailer,
-            pvBuffer: &mut **header as *mut _ as *mut c_void,
+            pvBuffer: header.as_mut_ptr() as *mut c_void,
         },
         SecBuffer {
             BufferType: SECBUFFER_DATA,
             cbBuffer: data.len() as u32,
-            pvBuffer: &mut **data as *mut _ as *mut c_void,
+            pvBuffer: data.as_mut_ptr() as *mut c_void,
         },
         SecBuffer {
             BufferType: SECBUFFER_PADDING,
             cbBuffer: sizes.cbBlockSize,
-            pvBuffer: &mut **padding as *mut _ as *mut c_void,
+            pvBuffer: padding.as_mut_ptr() as *mut c_void,
         },
     ];
     let mut buf_desc = SecBufferDesc {
