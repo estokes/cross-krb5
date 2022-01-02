@@ -23,11 +23,10 @@ use windows::Win32::{
             FreeCredentialsHandle, InitializeSecurityContextW, QueryContextAttributesW,
             QueryCredentialsAttributesW, QuerySecurityPackageInfoW, SecBuffer,
             SecBufferDesc, SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
-            SecPkgContext_StreamSizes, SecPkgCredentials_NamesW, SecPkgInfoW,
-            ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ, ISC_REQ_CONFIDENTIALITY,
-            ISC_REQ_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT, SECBUFFER_DATA, SECBUFFER_PADDING,
-            SECBUFFER_STREAM, SECBUFFER_TOKEN, SECBUFFER_VERSION,
-            SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES, SECPKG_ATTR_STREAM_SIZES,
+            SecPkgCredentials_NamesW, SecPkgInfoW, ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ,
+            ISC_REQ_CONFIDENTIALITY, ISC_REQ_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
+            SECBUFFER_DATA, SECBUFFER_PADDING, SECBUFFER_STREAM, SECBUFFER_TOKEN,
+            SECBUFFER_VERSION, SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES,
             SECPKG_CRED_ATTR_NAMES, SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND,
             SECURITY_NATIVE_DREP,
         },
@@ -167,39 +166,14 @@ fn query_pkg_sizes(ctx: &mut SecHandle, sz: &mut SecPkgContext_Sizes) -> Result<
     Ok(())
 }
 
-fn query_stream_sizes(
-    ctx: &mut SecHandle,
-    sz: &mut SecPkgContext_StreamSizes,
-) -> Result<()> {
-    let res = unsafe {
-        QueryContextAttributesW(
-            ctx as *mut _,
-            SECPKG_ATTR_STREAM_SIZES,
-            sz as *mut _ as *mut c_void,
-        )
-    };
-    if failed(res) {
-        bail!("failed to query stream sizes {}", format_error(res))
-    }
-    Ok(())
-}
-
 fn wrap_iov(
     ctx: &mut SecHandle,
     sizes: &SecPkgContext_Sizes,
-    stream_sizes: &SecPkgContext_StreamSizes,
     encrypt: bool,
     header: &mut BytesMut,
     data: &mut BytesMut,
     padding: &mut BytesMut,
 ) -> Result<()> {
-    if data.len() > stream_sizes.cbMaximumMessage as usize {
-        bail!(
-            "The message is too large {} max {}",
-            data.len(),
-            stream_sizes.cbMaximumMessage
-        );
-    }
     header.resize(sizes.cbSecurityTrailer as usize, 0);
     padding.resize(sizes.cbBlockSize as usize, 0);
     let mut buffers = [
@@ -238,7 +212,6 @@ fn wrap_iov(
 fn wrap(
     ctx: &mut SecHandle,
     sizes: &SecPkgContext_Sizes,
-    stream_sizes: &SecPkgContext_StreamSizes,
     encrypt: bool,
     msg: &[u8],
 ) -> Result<BytesMut> {
@@ -247,7 +220,7 @@ fn wrap(
     let mut data = BytesMut::from(msg);
     let mut padding = BytesMut::new();
     padding.resize(sizes.cbBlockSize as usize, 0);
-    wrap_iov(ctx, sizes, stream_sizes, encrypt, &mut header, &mut data, &mut padding)?;
+    wrap_iov(ctx, sizes, encrypt, &mut header, &mut data, &mut padding)?;
     let mut msg = BytesMut::with_capacity(header.len() + data.len() + padding.len());
     msg.extend_from_slice(&*header);
     msg.extend_from_slice(&*data);
@@ -338,7 +311,6 @@ pub struct ClientCtx {
     buf: Vec<u8>,
     done: bool,
     sizes: SecPkgContext_Sizes,
-    stream_sizes: SecPkgContext_StreamSizes,
     header: BytesMut,
     padding: BytesMut,
 }
@@ -358,10 +330,7 @@ impl fmt::Debug for ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn initiate(
-        principal: Option<&str>,
-        target_principal: &str,
-    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+    pub fn initiate(principal: Option<&str>, target_principal: &str) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let mut ctx = ClientCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, false)?,
@@ -371,7 +340,6 @@ impl ClientCtx {
             buf: alloc_krb5_buf()?,
             done: false,
             sizes: SecPkgContext_Sizes::default(),
-            stream_sizes: SecPkgContext_StreamSizes::default(),
             header: BytesMut::new(),
             padding: BytesMut::new(),
         };
@@ -434,7 +402,6 @@ impl ClientCtx {
         let res = res as u32;
         if res == SEC_E_OK.0 {
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
-            query_stream_sizes(&mut self.ctx, &mut self.stream_sizes)?;
             self.done = true;
         }
         if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
@@ -458,14 +425,13 @@ impl K5Ctx for ClientCtx {
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
-        wrap(&mut self.ctx, &self.sizes, &self.stream_sizes, encrypt, msg)
+        wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
         wrap_iov(
             &mut self.ctx,
-            &self.sizes,
-            &self.stream_sizes,
+            &mut self.sizes,
             encrypt,
             &mut self.header,
             &mut msg,
@@ -496,7 +462,6 @@ pub struct ServerCtx {
     lifetime: i64,
     done: bool,
     sizes: SecPkgContext_Sizes,
-    stream_sizes: SecPkgContext_StreamSizes,
     header: BytesMut,
     padding: BytesMut,
 }
@@ -516,10 +481,7 @@ impl fmt::Debug for ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn accept(
-        principal: Option<&str>,
-        token: &[u8],
-    ) -> Result<(Self, impl Deref<Target = [u8]>)> {
+    pub fn accept(principal: Option<&str>, token: &[u8]) -> Result<(Self, impl Deref<Target = [u8]>)> {
         let mut ctx = ServerCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(principal, true)?,
@@ -528,7 +490,6 @@ impl ServerCtx {
             lifetime: 0,
             done: false,
             sizes: SecPkgContext_Sizes::default(),
-            stream_sizes: SecPkgContext_StreamSizes::default(),
             header: BytesMut::new(),
             padding: BytesMut::new(),
         };
@@ -592,7 +553,6 @@ impl ServerCtx {
         let res = res as u32;
         if res == SEC_E_OK.0 {
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
-            query_stream_sizes(&mut self.ctx, &mut self.stream_sizes)?;
             self.done = true;
         }
         if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
@@ -616,14 +576,13 @@ impl K5Ctx for ServerCtx {
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
-        wrap(&mut self.ctx, &self.sizes, &self.stream_sizes, encrypt, msg)
+        wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
         wrap_iov(
             &mut self.ctx,
-            &self.sizes,
-            &self.stream_sizes,
+            &mut self.sizes,
             encrypt,
             &mut self.header,
             &mut msg,
