@@ -1,4 +1,4 @@
-use super::{K5Ctx, K5ServerCtx};
+use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx};
 use anyhow::{anyhow, bail, Error, Result};
 use bytes::BytesMut;
 use bytes::{self, buf::Chain, Buf as _};
@@ -119,6 +119,7 @@ pub struct ClientCtx {
 
 impl ClientCtx {
     pub fn initiate(
+        _flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
@@ -193,6 +194,7 @@ pub struct ServerCtx {
 
 impl ServerCtx {
     pub fn accept(
+        _flags: AcceptFlags,
         principal: Option<&str>,
         token: &[u8],
     ) -> Result<(ServerCtx, impl Deref<Target = [u8]>)> {

@@ -16,24 +16,24 @@
 //! # use anyhow::Result;
 //! # fn run(spn: &str) -> Result<()> {
 //! use cross_krb5::{ClientCtx, ServerCtx, K5Ctx, K5ServerCtx};
-//! 
+//!
 //! // make a pending context and a token to connect to `service/host@REALM`
 //! let (pending, token) = ClientCtx::initiate(None, "service/host@REALM")?;
-//! 
+//!
 //! // accept the client's token for `service/host@REALM`. The token from the client
 //! // is accepted, and, if valid, the server end of the context and a token
 //! // for the client will be created.
 //! let (mut server, token) = ServerCtx::accept(Some("service/host@REALM"), &*token)?;
-//! 
+//!
 //! // use the server supplied token to finish initializing the pending client context.
 //! // Now encrypted communication between the two contexts is possible, and mutual
 //! // authentication has succeeded.
 //! let mut client = pending.finish(&*token)?;
-//! 
+//!
 //! // send secret messages
 //! let secret_msg = client.wrap(true, b"super secret message")?;
 //! println!("{}", String::from_utf8_lossy(&server.unwrap(&*secret_msg)?));
-//! 
+//!
 //! // ... profit!
 //!# Ok(())
 //!# }
@@ -42,6 +42,8 @@
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
 use std::{ops::Deref, time::Duration};
+#[macro_use]
+extern crate bitflags;
 
 pub trait K5Ctx {
     type Buffer: Deref<Target = [u8]> + Send + Sync;
@@ -120,6 +122,15 @@ impl PendingClientCtx {
     }
 }
 
+bitflags! {
+    pub struct InitiateFlags: u32 {
+        /// Windows only, use the sspi negotiate package instead of
+        /// the Kerberos package. Some Windows servers expect these
+        /// tokens instead of normal gssapi compatible tokens.
+        const NEGOTIATE_TOKEN = 0x1;
+    }
+}
+
 /// A Kerberos client context
 #[derive(Debug)]
 pub struct ClientCtx(ClientCtxImpl);
@@ -138,10 +149,11 @@ impl ClientCtx {
     /// must be passed to the `PendingClientCtx::finish` method to
     /// complete the initialization.
     pub fn initiate(
+        flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let (pending, token) = ClientCtxImpl::initiate(principal, target_principal)?;
+        let (pending, token) = ClientCtxImpl::initiate(flags, principal, target_principal)?;
         Ok((PendingClientCtx(pending), token))
     }
 }
@@ -168,6 +180,18 @@ impl K5Ctx for ClientCtx {
 
     fn ttl(&mut self) -> Result<Duration> {
         K5Ctx::ttl(&mut self.0)
+    }
+}
+
+bitflags! {
+    pub struct AcceptFlags: u32 {
+        /// Windows only, use the sspi negotiate package instead of
+        /// the Kerberos package. Some Windows clients generate these
+        /// tokens instead of normal gssapi compatible tokens. This
+        /// likely won't be able to parse gssapi tokens, so only use
+        /// this if you know the client will be on windows sending
+        /// negotiate tokens.
+        const NEGOTIATE_TOKEN = 0x1;
     }
 }
 
@@ -210,10 +234,11 @@ impl ServerCtx {
     /// context and a token to send back to the client will be
     /// returned.
     pub fn accept(
+        flags: AcceptFlags,
         principal: Option<&str>,
         token: &[u8],
     ) -> Result<(Self, impl Deref<Target = [u8]>)> {
-        let (ctx, token) = ServerCtxImpl::accept(principal, token)?;
+        let (ctx, token) = ServerCtxImpl::accept(flags, principal, token)?;
         Ok((ServerCtx(ctx), token))
     }
 }

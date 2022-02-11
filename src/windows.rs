@@ -1,4 +1,4 @@
-use super::{K5Ctx, K5ServerCtx};
+use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx};
 use anyhow::{anyhow, bail, Result};
 use bytes::{buf::Chain, Buf, BytesMut};
 use std::{
@@ -86,12 +86,12 @@ impl Drop for Cred {
 }
 
 impl Cred {
-    fn acquire(principal: Option<&str>, server: bool) -> Result<Cred> {
+    fn acquire(negotiate: bool, principal: Option<&str>, server: bool) -> Result<Cred> {
         let mut cred = SecHandle::default();
         let principal = principal.map(str_to_wstr);
         let principal_ptr =
             principal.map(|mut p| p.as_mut_ptr()).unwrap_or(ptr::null_mut());
-        let mut package = str_to_wstr("Kerberos");
+        let mut package = str_to_wstr(if negotiate { "Negotiate" } else { "Kerberos" });
         let dir = if server { SECPKG_CRED_INBOUND } else { SECPKG_CRED_OUTBOUND };
         let mut lifetime = 0i64;
         let res = unsafe {
@@ -330,10 +330,18 @@ impl fmt::Debug for ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn initiate(principal: Option<&str>, target_principal: &str) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+    pub fn initiate(
+        flags: InitiateFlags,
+        principal: Option<&str>,
+        target_principal: &str,
+    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let mut ctx = ClientCtx {
             ctx: SecHandle::default(),
-            cred: Cred::acquire(principal, false)?,
+            cred: Cred::acquire(
+                flags.contains(InitiateFlags::NEGOTIATE_TOKEN),
+                principal,
+                false,
+            )?,
             target: str_to_wstr(target_principal),
             attrs: 0,
             lifetime: 0,
@@ -481,10 +489,18 @@ impl fmt::Debug for ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn accept(principal: Option<&str>, token: &[u8]) -> Result<(Self, impl Deref<Target = [u8]>)> {
+    pub fn accept(
+        flags: AcceptFlags,
+        principal: Option<&str>,
+        token: &[u8],
+    ) -> Result<(Self, impl Deref<Target = [u8]>)> {
         let mut ctx = ServerCtx {
             ctx: SecHandle::default(),
-            cred: Cred::acquire(principal, true)?,
+            cred: Cred::acquire(
+                flags.contains(AcceptFlags::NEGOTIATE_TOKEN),
+                principal,
+                true,
+            )?,
             buf: alloc_krb5_buf()?,
             attrs: 0,
             lifetime: 0,
