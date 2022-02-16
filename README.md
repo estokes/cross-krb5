@@ -13,15 +13,29 @@ platform specific.
 
 # Example
 ```rust
-use cross_krb5::{ClientCtx, ServerCtx, K5Ctx, K5ServerCtx};
+use cross_krb5::{
+    ClientCtx, 
+    ServerCtx, 
+    K5Ctx, 
+    K5ServerCtx, 
+    AcceptFlags, 
+    InitiateFlags
+};
 
 // make a pending context and a token to connect to `service/host@REALM`
-let (pending, token) = ClientCtx::initiate(None, "service/host@REALM")?;
+let (pending, token) = ClientCtx::initiate(
+    InitiateFlags::empty(), 
+    None, 
+    "service/host@REALM"
+)?;
 
 // accept the client's token for `service/host@REALM`. The token from the client
 // is accepted, and, if valid, the server end of the context and a token
 // for the client will be created.
-let (mut server, token) = ServerCtx::accept(Some("service/host@REALM"), &*token)?;
+let (mut server, token) = ServerCtx::accept(
+    AcceptFlags::empty(), 
+    Some("service/host@REALM"), &*token
+)?;
 
 // use the server supplied token to finish initializing the pending client context.
 // Now encrypted communication between the two contexts is possible, and mutual
