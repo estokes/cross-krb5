@@ -407,7 +407,6 @@ impl ClientCtx {
         if failed(res) {
             bail!("ClientCtx::step failed {}", format_error(res))
         }
-        let res = res as u32;
         if res == SEC_E_OK.0 {
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
             self.done = true;
@@ -566,7 +565,6 @@ impl ServerCtx {
         if failed(res) {
             bail!("ServerCtx::step failed {}", format_error(res));
         }
-        let res = res as u32;
         if res == SEC_E_OK.0 {
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
             self.done = true;
