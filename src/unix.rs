@@ -118,10 +118,11 @@ pub struct ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn initiate(
+    pub fn initiate_with_cbt(
         _flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
+        cb_token: Option<Vec<u8>>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let name = principal
             .map(|n| {
@@ -143,8 +144,19 @@ impl ClientCtx {
             CtxFlags::GSS_C_MUTUAL_FLAG,
             Some(&GSS_MECH_KRB5),
         );
+        if let Some(cbt) = cb_token {
+            gss.set_cb_token(cbt);
+        }
         let token = gss.step(None)?.ok_or_else(|| anyhow!("expected token"))?;
         Ok((PendingClientCtx(gss), token))
+    }
+
+    pub fn initiate(
+        _flags: InitiateFlags,
+        principal: Option<&str>,
+        target_principal: &str,
+    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+        ClientCtx::initiate_with_cbt(_flags, principal, target_principal, None)
     }
 }
 

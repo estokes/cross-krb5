@@ -171,6 +171,20 @@ impl ClientCtx {
         let (pending, token) = ClientCtxImpl::initiate(flags, principal, target_principal)?;
         Ok((PendingClientCtx(pending), token))
     }
+
+    #[cfg(unix)]
+    /// Initiate a client context as with `initiate()`, optinally passing
+    /// the channel binding token which will be incorporated into the initial
+    /// client token.
+    pub fn initiate_with_cbt(
+        cbt: Option<Vec<u8>>,
+        flags: InitiateFlags,
+        principal: Option<&str>,
+        target_principal: &str,
+    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+        let (pending, token) = ClientCtxImpl::initiate_with_cbt(flags, principal, target_principal, cbt)?;
+        Ok((PendingClientCtx(pending), token))
+    }
 }
 
 impl K5Ctx for ClientCtx {
