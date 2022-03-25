@@ -97,7 +97,7 @@ pub struct PendingClientCtx(GssClientCtx);
 
 impl PendingClientCtx {
     pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
-        if self.0.step(Some(token))?.is_some() {
+        if self.0.step(Some(token), None)?.is_some() {
             bail!("unexpected second client token")
         }
         Ok(ClientCtx {
@@ -118,11 +118,11 @@ pub struct ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn initiate_with_cbt(
+    pub fn initiate(
         _flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
-        cb_token: Option<Vec<u8>>,
+        channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let name = principal
             .map(|n| {
@@ -144,19 +144,8 @@ impl ClientCtx {
             CtxFlags::GSS_C_MUTUAL_FLAG,
             Some(&GSS_MECH_KRB5),
         );
-        if let Some(cbt) = cb_token {
-            gss.set_cb_token(cbt);
-        }
-        let token = gss.step(None)?.ok_or_else(|| anyhow!("expected token"))?;
+        let token = gss.step(None, channel_bindings)?.ok_or_else(|| anyhow!("expected token"))?;
         Ok((PendingClientCtx(gss), token))
-    }
-
-    pub fn initiate(
-        _flags: InitiateFlags,
-        principal: Option<&str>,
-        target_principal: &str,
-    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        ClientCtx::initiate_with_cbt(_flags, principal, target_principal, None)
     }
 }
 

@@ -25,6 +25,7 @@ use windows::Win32::{
             SecBufferDesc, SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
             SecPkgCredentials_NamesW, SecPkgInfoW, ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ,
             ISC_REQ_CONFIDENTIALITY, ISC_REQ_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
+            SEC_CHANNEL_BINDINGS, SECBUFFER_CHANNEL_BINDINGS,
             SECBUFFER_DATA, SECBUFFER_PADDING, SECBUFFER_STREAM, SECBUFFER_TOKEN,
             SECBUFFER_VERSION, SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES,
             SECPKG_CRED_ATTR_NAMES, SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND,
@@ -295,7 +296,7 @@ pub struct PendingClientCtx(ClientCtx);
 
 impl PendingClientCtx {
     pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
-        if self.0.do_step(Some(token))?.is_some() {
+        if self.0.do_step(Some(token), None)?.is_some() {
             bail!("unexpected second token")
         }
         Ok(self.0)
@@ -334,6 +335,7 @@ impl ClientCtx {
         flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
+        cb_token: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let mut ctx = ClientCtx {
             ctx: SecHandle::default(),
@@ -351,11 +353,11 @@ impl ClientCtx {
             header: BytesMut::new(),
             padding: BytesMut::new(),
         };
-        let token = ctx.do_step(None)?.ok_or_else(|| anyhow!("expected token"))?;
+        let token = ctx.do_step(None, cb_token)?.ok_or_else(|| anyhow!("expected token"))?;
         Ok((PendingClientCtx(ctx), token))
     }
 
-    fn do_step(&mut self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
+    fn do_step(&mut self, tok: Option<&[u8]>, cb_token: Option<&[u8]>) -> Result<Option<BytesMut>> {
         if self.done {
             return Ok(None);
         }
@@ -384,10 +386,30 @@ impl ClientCtx {
             cBuffers: 1,
             pBuffers: &mut in_buf as *mut _,
         };
+        let mut cbt_buf;
+        if let Some(cbt) = cb_token {
+            assert!(tok.is_none());
+            cbt_buf = BytesMut::with_capacity(mem::size_of::<SEC_CHANNEL_BINDINGS>() + cbt.len());
+            let mut sec_cb = SEC_CHANNEL_BINDINGS::default();
+            sec_cb.dwApplicationDataOffset = mem::size_of::<SEC_CHANNEL_BINDINGS>() as u32;
+            sec_cb.cbApplicationDataLength = cbt.len() as u32;
+            cbt_buf.extend(unsafe {
+                std::slice::from_raw_parts(
+                    &sec_cb as *const SEC_CHANNEL_BINDINGS as *const u8, mem::size_of::<SEC_CHANNEL_BINDINGS>()
+                )
+            });
+            cbt_buf.extend(cbt);
+            in_buf = SecBuffer {
+                cbBuffer: cbt_buf.len() as u32,
+                BufferType: SECBUFFER_CHANNEL_BINDINGS,
+                pvBuffer: cbt_buf.as_ptr() as *mut c_void,
+            };
+            in_buf_desc.pBuffers = &mut in_buf as *mut _;
+        }
         let ctx_ptr =
             if tok.is_none() { ptr::null_mut() } else { &mut self.ctx as *mut _ };
         let in_buf_ptr =
-            if tok.is_some() { &mut in_buf_desc as *mut _ } else { ptr::null_mut() };
+            if tok.is_some() || cb_token.is_some() { &mut in_buf_desc as *mut _ } else { ptr::null_mut() };
         let res = unsafe {
             InitializeSecurityContextW(
                 &mut self.cred.0 as *mut _,

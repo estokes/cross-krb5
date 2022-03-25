@@ -156,7 +156,9 @@ impl ClientCtx {
     /// current process will be used. `target_principal` must be the
     /// service principal name of the service you intend to
     /// communicate with. This should be an spn as described by
-    /// GSSAPI, e.g. `service/host@REALM`
+    /// GSSAPI, e.g. `service/host@REALM`. If present, `channel_bindings` is
+    /// a service-specific channel binding token which will be part
+    /// of the initial communication with the server.
     ///
     /// On success a `PendingClientCtx` and a token to be sent to the
     /// server will be returned. The server will accept the client
@@ -167,22 +169,9 @@ impl ClientCtx {
         flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
+        channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let (pending, token) = ClientCtxImpl::initiate(flags, principal, target_principal)?;
-        Ok((PendingClientCtx(pending), token))
-    }
-
-    #[cfg(unix)]
-    /// Initiate a client context as with `initiate()`, optinally passing
-    /// the channel binding token which will be incorporated into the initial
-    /// client token.
-    pub fn initiate_with_cbt(
-        cbt: Option<Vec<u8>>,
-        flags: InitiateFlags,
-        principal: Option<&str>,
-        target_principal: &str,
-    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let (pending, token) = ClientCtxImpl::initiate_with_cbt(flags, principal, target_principal, cbt)?;
+        let (pending, token) = ClientCtxImpl::initiate(flags, principal, target_principal, channel_bindings)?;
         Ok((PendingClientCtx(pending), token))
     }
 }
