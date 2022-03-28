@@ -1,0 +1,13 @@
+0.3.0:
+- add support for channel bindings
+
+0.2.0:
+- add support for flags. The first flag indicates that the supplied
+  token is a negotiate token (only relevant on windows). The negotiate
+  token will work IFF the negotiated mechanism is Kerberos.
+
+0.1.1:
+- merge patch to fix building when the iov feature is disabled (#1)
+  thanks kiron1
+
+0.1.0: initial release

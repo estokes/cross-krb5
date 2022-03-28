@@ -1,7 +1,7 @@
 [package]
 name = "cross-krb5"
 authors = ["Eric Stokes <letaris@gmail.com>"]
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Safe cross platform Kerberos v5 interface"
@@ -16,12 +16,12 @@ default = ["iov"]
 iov = ["libgssapi/iov"]
 
 [target.'cfg(unix)'.dependencies.libgssapi]
-version = "0.5"
+version = "0.6"
 path = "../libgssapi/libgssapi"
 default_features = false
 
 [target.'cfg(windows)'.dependencies.windows]
-version = "0.32"
+version = "0.34"
 features = [
     "Win32_Foundation",
     "Win32_Globalization",

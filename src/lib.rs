@@ -28,7 +28,8 @@
 //! let (pending, token) = ClientCtx::initiate(
 //!      InitiateFlags::empty(),
 //!      None,
-//!      "service/host@REALM"
+//!      "service/host@REALM",
+//!      None
 //! )?;
 //!
 //! // accept the client's token for `service/host@REALM`. The token from the client
@@ -171,7 +172,12 @@ impl ClientCtx {
         target_principal: &str,
         channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let (pending, token) = ClientCtxImpl::initiate(flags, principal, target_principal, channel_bindings)?;
+        let (pending, token) = ClientCtxImpl::initiate(
+            flags,
+            principal,
+            target_principal,
+            channel_bindings,
+        )?;
         Ok((PendingClientCtx(pending), token))
     }
 }

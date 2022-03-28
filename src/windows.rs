@@ -25,11 +25,11 @@ use windows::Win32::{
             SecBufferDesc, SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
             SecPkgCredentials_NamesW, SecPkgInfoW, ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ,
             ISC_REQ_CONFIDENTIALITY, ISC_REQ_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
-            SEC_CHANNEL_BINDINGS, SECBUFFER_CHANNEL_BINDINGS,
-            SECBUFFER_DATA, SECBUFFER_PADDING, SECBUFFER_STREAM, SECBUFFER_TOKEN,
-            SECBUFFER_VERSION, SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES,
-            SECPKG_CRED_ATTR_NAMES, SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND,
-            SECURITY_NATIVE_DREP,
+            SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_DATA, SECBUFFER_PADDING,
+            SECBUFFER_STREAM, SECBUFFER_TOKEN, SECBUFFER_VERSION,
+            SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES, SECPKG_CRED_ATTR_NAMES,
+            SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP,
+            SEC_CHANNEL_BINDINGS,
         },
         Credentials::SecHandle,
     },
@@ -359,7 +359,9 @@ impl ClientCtx {
             header: BytesMut::new(),
             padding: BytesMut::new(),
         };
-        let token = ctx.do_step(InputData::Initial(cb_token))?.ok_or_else(|| anyhow!("expected token"))?;
+        let token = ctx
+            .do_step(InputData::Initial(cb_token))?
+            .ok_or_else(|| anyhow!("expected token"))?;
         Ok((PendingClientCtx(ctx), token))
     }
 
@@ -388,13 +390,17 @@ impl ClientCtx {
                 pvBuffer: ptr::null_mut(),
             },
             InputData::Initial(Some(cb_token)) => {
-                cbt_buf = BytesMut::with_capacity(mem::size_of::<SEC_CHANNEL_BINDINGS>() + cb_token.len());
+                cbt_buf = BytesMut::with_capacity(
+                    mem::size_of::<SEC_CHANNEL_BINDINGS>() + cb_token.len(),
+                );
                 let mut sec_cb = SEC_CHANNEL_BINDINGS::default();
-                sec_cb.dwApplicationDataOffset = mem::size_of::<SEC_CHANNEL_BINDINGS>() as u32;
+                sec_cb.dwApplicationDataOffset =
+                    mem::size_of::<SEC_CHANNEL_BINDINGS>() as u32;
                 sec_cb.cbApplicationDataLength = cb_token.len() as u32;
                 cbt_buf.extend(unsafe {
                     std::slice::from_raw_parts(
-                        &sec_cb as *const SEC_CHANNEL_BINDINGS as *const u8, mem::size_of::<SEC_CHANNEL_BINDINGS>()
+                        &sec_cb as *const SEC_CHANNEL_BINDINGS as *const u8,
+                        mem::size_of::<SEC_CHANNEL_BINDINGS>(),
                     )
                 });
                 cbt_buf.extend(cb_token);
@@ -407,8 +413,10 @@ impl ClientCtx {
             InputData::Subsequent(tok) => SecBuffer {
                 cbBuffer: tok.len() as u32,
                 BufferType: SECBUFFER_TOKEN,
-                pvBuffer: unsafe { mem::transmute::<*const u8, *mut c_void>(tok.as_ptr()) },
-            }
+                pvBuffer: unsafe {
+                    mem::transmute::<*const u8, *mut c_void>(tok.as_ptr())
+                },
+            },
         };
         let mut in_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
@@ -420,7 +428,9 @@ impl ClientCtx {
             InputData::Subsequent(_) => &mut self.ctx as *mut _,
         };
         let in_buf_ptr = match data {
-            InputData::Initial(Some(_)) | InputData::Subsequent(_) => &mut in_buf_desc as *mut _,
+            InputData::Initial(Some(_)) | InputData::Subsequent(_) => {
+                &mut in_buf_desc as *mut _
+            }
             InputData::Initial(None) => ptr::null_mut(),
         };
         let res = unsafe {

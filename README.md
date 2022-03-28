@@ -26,7 +26,8 @@ use cross_krb5::{
 let (pending, token) = ClientCtx::initiate(
     InitiateFlags::empty(), 
     None, 
-    "service/host@REALM"
+    "service/host@REALM",
+    None
 )?;
 
 // accept the client's token for `service/host@REALM`. The token from the client
