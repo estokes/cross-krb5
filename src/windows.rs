@@ -296,7 +296,7 @@ pub struct PendingClientCtx(ClientCtx);
 
 impl PendingClientCtx {
     pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
-        if self.0.do_step(Some(token), None)?.is_some() {
+        if self.0.do_step(InputData::Subsequent(token))?.is_some() {
             bail!("unexpected second token")
         }
         Ok(self.0)
@@ -330,6 +330,12 @@ impl fmt::Debug for ClientCtx {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InputData<'a> {
+    Initial(Option<&'a [u8]>),
+    Subsequent(&'a [u8]),
+}
+
 impl ClientCtx {
     pub fn initiate(
         flags: InitiateFlags,
@@ -353,11 +359,11 @@ impl ClientCtx {
             header: BytesMut::new(),
             padding: BytesMut::new(),
         };
-        let token = ctx.do_step(None, cb_token)?.ok_or_else(|| anyhow!("expected token"))?;
+        let token = ctx.do_step(InputData::Initial(cb_token))?.ok_or_else(|| anyhow!("expected token"))?;
         Ok((PendingClientCtx(ctx), token))
     }
 
-    fn do_step(&mut self, tok: Option<&[u8]>, cb_token: Option<&[u8]>) -> Result<Option<BytesMut>> {
+    fn do_step(&mut self, data: InputData) -> Result<Option<BytesMut>> {
         if self.done {
             return Ok(None);
         }
@@ -374,42 +380,49 @@ impl ClientCtx {
             cBuffers: 1,
             pBuffers: &mut out_buf as *mut _,
         };
-        let mut in_buf = SecBuffer {
-            cbBuffer: tok.map(|t| t.len()).unwrap_or(0) as u32,
-            BufferType: SECBUFFER_TOKEN,
-            pvBuffer: tok
-                .map(|t| unsafe { mem::transmute::<*const u8, *mut c_void>(t.as_ptr()) })
-                .unwrap_or(ptr::null_mut()),
+        let mut cbt_buf;
+        let mut in_buf = match data {
+            InputData::Initial(None) => SecBuffer {
+                cbBuffer: 0,
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: ptr::null_mut(),
+            },
+            InputData::Initial(Some(cb_token)) => {
+                cbt_buf = BytesMut::with_capacity(mem::size_of::<SEC_CHANNEL_BINDINGS>() + cb_token.len());
+                let mut sec_cb = SEC_CHANNEL_BINDINGS::default();
+                sec_cb.dwApplicationDataOffset = mem::size_of::<SEC_CHANNEL_BINDINGS>() as u32;
+                sec_cb.cbApplicationDataLength = cb_token.len() as u32;
+                cbt_buf.extend(unsafe {
+                    std::slice::from_raw_parts(
+                        &sec_cb as *const SEC_CHANNEL_BINDINGS as *const u8, mem::size_of::<SEC_CHANNEL_BINDINGS>()
+                    )
+                });
+                cbt_buf.extend(cb_token);
+                SecBuffer {
+                    cbBuffer: cbt_buf.len() as u32,
+                    BufferType: SECBUFFER_CHANNEL_BINDINGS,
+                    pvBuffer: cbt_buf.as_ptr() as *mut c_void,
+                }
+            }
+            InputData::Subsequent(tok) => SecBuffer {
+                cbBuffer: tok.len() as u32,
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: unsafe { mem::transmute::<*const u8, *mut c_void>(tok.as_ptr()) },
+            }
         };
         let mut in_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
             cBuffers: 1,
             pBuffers: &mut in_buf as *mut _,
         };
-        let mut cbt_buf;
-        if let Some(cbt) = cb_token {
-            assert!(tok.is_none());
-            cbt_buf = BytesMut::with_capacity(mem::size_of::<SEC_CHANNEL_BINDINGS>() + cbt.len());
-            let mut sec_cb = SEC_CHANNEL_BINDINGS::default();
-            sec_cb.dwApplicationDataOffset = mem::size_of::<SEC_CHANNEL_BINDINGS>() as u32;
-            sec_cb.cbApplicationDataLength = cbt.len() as u32;
-            cbt_buf.extend(unsafe {
-                std::slice::from_raw_parts(
-                    &sec_cb as *const SEC_CHANNEL_BINDINGS as *const u8, mem::size_of::<SEC_CHANNEL_BINDINGS>()
-                )
-            });
-            cbt_buf.extend(cbt);
-            in_buf = SecBuffer {
-                cbBuffer: cbt_buf.len() as u32,
-                BufferType: SECBUFFER_CHANNEL_BINDINGS,
-                pvBuffer: cbt_buf.as_ptr() as *mut c_void,
-            };
-            in_buf_desc.pBuffers = &mut in_buf as *mut _;
-        }
-        let ctx_ptr =
-            if tok.is_none() { ptr::null_mut() } else { &mut self.ctx as *mut _ };
-        let in_buf_ptr =
-            if tok.is_some() || cb_token.is_some() { &mut in_buf_desc as *mut _ } else { ptr::null_mut() };
+        let ctx_ptr = match data {
+            InputData::Initial(_) => ptr::null_mut(),
+            InputData::Subsequent(_) => &mut self.ctx as *mut _,
+        };
+        let in_buf_ptr = match data {
+            InputData::Initial(Some(_)) | InputData::Subsequent(_) => &mut in_buf_desc as *mut _,
+            InputData::Initial(None) => ptr::null_mut(),
+        };
         let res = unsafe {
             InitializeSecurityContextW(
                 &mut self.cred.0 as *mut _,
