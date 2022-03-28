@@ -17,7 +17,6 @@ use cross_krb5::{
     ClientCtx, 
     ServerCtx, 
     K5Ctx, 
-    K5ServerCtx, 
     AcceptFlags, 
     InitiateFlags
 };

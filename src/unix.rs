@@ -144,7 +144,8 @@ impl ClientCtx {
             CtxFlags::GSS_C_MUTUAL_FLAG,
             Some(&GSS_MECH_KRB5),
         );
-        let token = gss.step(None, channel_bindings)?.ok_or_else(|| anyhow!("expected token"))?;
+        let token =
+            gss.step(None, channel_bindings)?.ok_or_else(|| anyhow!("expected token"))?;
         Ok((PendingClientCtx(gss), token))
     }
 }
