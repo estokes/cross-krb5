@@ -97,7 +97,7 @@ pub struct PendingClientCtx(GssClientCtx);
 
 impl PendingClientCtx {
     pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
-        if self.0.step(Some(token))?.is_some() {
+        if self.0.step(Some(token), None)?.is_some() {
             bail!("unexpected second client token")
         }
         Ok(ClientCtx {
@@ -122,6 +122,7 @@ impl ClientCtx {
         _flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
+        channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let name = principal
             .map(|n| {
@@ -143,7 +144,7 @@ impl ClientCtx {
             CtxFlags::GSS_C_MUTUAL_FLAG,
             Some(&GSS_MECH_KRB5),
         );
-        let token = gss.step(None)?.ok_or_else(|| anyhow!("expected token"))?;
+        let token = gss.step(None, channel_bindings)?.ok_or_else(|| anyhow!("expected token"))?;
         Ok((PendingClientCtx(gss), token))
     }
 }
