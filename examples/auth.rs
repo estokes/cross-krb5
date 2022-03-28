@@ -17,8 +17,7 @@ fn main() {
     // is accepted, and, if valid, the server end of the context and a token
     // for the client will be created.
     let (mut server, token) =
-        ServerCtx::accept(AcceptFlags::empty(), Some("service/host@REALM"), &*token)
-            .expect("accept");
+        ServerCtx::accept(AcceptFlags::empty(), Some(&args[1]), &*token).expect("accept");
 
     // use the server supplied token to finish initializing the pending client context.
     // Now encrypted communication between the two contexts is possible, and mutual
