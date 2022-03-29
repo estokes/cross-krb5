@@ -1,4 +1,4 @@
-use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx};
+use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx, OrContinue};
 use anyhow::{anyhow, bail, Result};
 use bytes::{buf::Chain, Buf, BytesMut};
 use std::{
@@ -13,15 +13,12 @@ use std::{
 use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
-        Foundation::{
-            GetLastError, FILETIME, SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE,
-            SEC_I_COMPLETE_NEEDED, SYSTEMTIME,
-        },
+        Foundation::{GetLastError, FILETIME, SEC_E_OK, SYSTEMTIME},
         Globalization::lstrlenW,
         Security::{
             Authentication::Identity::{
-                AcceptSecurityContext, AcquireCredentialsHandleW, CompleteAuthToken,
-                DecryptMessage, DeleteSecurityContext, EncryptMessage, FreeContextBuffer,
+                AcceptSecurityContext, AcquireCredentialsHandleW, DecryptMessage,
+                DeleteSecurityContext, EncryptMessage, FreeContextBuffer,
                 FreeCredentialsHandle, InitializeSecurityContextW,
                 QueryContextAttributesW, QueryCredentialsAttributesW,
                 QuerySecurityPackageInfoW, SecBuffer, SecBufferDesc,
@@ -96,13 +93,13 @@ impl Cred {
         let principal = principal.map(str_to_wstr);
         let principal_ptr =
             principal.map(|mut p| p.as_mut_ptr()).unwrap_or(ptr::null_mut());
-        let mut package = str_to_wstr(if negotiate { "Negotiate" } else { "Kerberos" });
+        let package = str_to_wstr(if negotiate { "Negotiate" } else { "Kerberos" });
         let dir = if server { SECPKG_CRED_INBOUND } else { SECPKG_CRED_OUTBOUND };
         let mut lifetime = 0i64;
         let res = unsafe {
             AcquireCredentialsHandleW(
                 PCWSTR(principal_ptr),
-                PCWSTR(package.as_mut_ptr()),
+                PCWSTR(package.as_ptr()),
                 dir,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -283,14 +280,23 @@ fn convert_lifetime(expires: i64) -> Result<Duration> {
 }
 
 #[derive(Debug)]
-pub struct PendingClientCtx(ClientCtx);
+pub(crate) struct PendingClientCtx(ClientCtx);
 
 impl PendingClientCtx {
-    pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
-        if self.0.do_step(InputData::Subsequent(token))?.is_some() {
-            bail!("unexpected second token")
-        }
-        Ok(self.0)
+    pub(crate) fn step(
+        mut self,
+        token: &[u8],
+    ) -> Result<
+        OrContinue<
+            (ClientCtx, Option<impl Deref<Target = [u8]>>),
+            (PendingClientCtx, impl Deref<Target = [u8]>),
+        >,
+    > {
+        Ok(match self.0.do_step(InputData::Subsequent(token))? {
+            None => OrContinue::Finished((self.0, None)),
+            Some(tok) if self.0.done => OrContinue::Finished((self.0, Some(tok))),
+            Some(tok) => OrContinue::Continue((self, tok)),
+        })
     }
 }
 
@@ -328,7 +334,7 @@ enum InputData<'a> {
 }
 
 impl ClientCtx {
-    pub fn initiate(
+    pub(crate) fn initiate(
         flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
@@ -404,9 +410,7 @@ impl ClientCtx {
             InputData::Subsequent(tok) => SecBuffer {
                 cbBuffer: tok.len() as u32,
                 BufferType: SECBUFFER_TOKEN,
-                pvBuffer: unsafe {
-                    mem::transmute::<*const u8, *mut c_void>(tok.as_ptr())
-                },
+                pvBuffer: tok.as_ptr() as *mut c_void
             },
         };
         let mut in_buf_desc = SecBufferDesc {
@@ -426,7 +430,7 @@ impl ClientCtx {
             InitializeSecurityContextW(
                 &mut self.cred.0,
                 ctx_ptr,
-                self.target.as_mut_ptr(),
+                self.target.as_ptr(),
                 ISC_REQ_CONFIDENTIALITY | ISC_REQ_MUTUAL_AUTH,
                 0,
                 SECURITY_NATIVE_DREP,
@@ -444,12 +448,6 @@ impl ClientCtx {
         if res == SEC_E_OK.0 {
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
             self.done = true;
-        }
-        if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
-            let res = unsafe { CompleteAuthToken(&self.ctx, &mut out_buf_desc) };
-            if failed(res) {
-                bail!("complete token failed {}", format_error(res))
-            }
         }
         if out_buf.cbBuffer > 0 {
             Ok(Some(BytesMut::from(&self.buf[0..(out_buf.cbBuffer as usize)])))
@@ -495,6 +493,26 @@ impl K5Ctx for ClientCtx {
     }
 }
 
+pub(crate) struct PendingServerCtx(ServerCtx);
+
+impl PendingServerCtx {
+    pub(crate) fn step(
+        mut self,
+        tok: &[u8],
+    ) -> Result<
+        OrContinue<
+            (ServerCtx, Option<impl Deref<Target = [u8]>>),
+            (PendingServerCtx, impl Deref<Target = [u8]>),
+        >,
+    > {
+        Ok(match self.0.do_step(tok)? {
+            None => OrContinue::Finished((self.0, None)),
+            Some(tok) if self.0.done => OrContinue::Finished((self.0, Some(tok))),
+            Some(tok) => OrContinue::Continue((self, tok)),
+        })
+    }
+}
+
 pub struct ServerCtx {
     ctx: SecHandle,
     cred: Cred,
@@ -522,12 +540,11 @@ impl fmt::Debug for ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn accept(
+    pub(crate) fn create(
         flags: AcceptFlags,
         principal: Option<&str>,
-        token: &[u8],
-    ) -> Result<(Self, impl Deref<Target = [u8]>)> {
-        let mut ctx = ServerCtx {
+    ) -> Result<PendingServerCtx> {
+        Ok(PendingServerCtx(ServerCtx {
             ctx: SecHandle::default(),
             cred: Cred::acquire(
                 flags.contains(AcceptFlags::NEGOTIATE_TOKEN),
@@ -541,13 +558,10 @@ impl ServerCtx {
             sizes: SecPkgContext_Sizes::default(),
             header: BytesMut::new(),
             padding: BytesMut::new(),
-        };
-        let token = ctx.do_step(Some(token))?.ok_or_else(|| anyhow!("expected token"))?;
-        Ok((ctx, token))
+        }))
     }
 
-    fn do_step(&mut self, tok: Option<&[u8]>) -> Result<Option<BytesMut>> {
-        let tok = tok.ok_or_else(|| anyhow!("no token supplied"))?;
+    fn do_step(&mut self, tok: &[u8]) -> Result<Option<BytesMut>> {
         if self.done {
             return Ok(None);
         }
@@ -602,12 +616,6 @@ impl ServerCtx {
         if res == SEC_E_OK.0 {
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
             self.done = true;
-        }
-        if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
-            let res = unsafe { CompleteAuthToken(&self.ctx, &mut out_buf_desc) };
-            if failed(res) {
-                bail!("complete token failed {}", format_error(res))
-            }
         }
         if out_buf.cbBuffer > 0 {
             Ok(Some(BytesMut::from(&self.buf[0..(out_buf.cbBuffer as usize)])))

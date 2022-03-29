@@ -115,7 +115,7 @@ mod unix;
 #[cfg(unix)]
 use crate::unix::{
     ClientCtx as ClientCtxImpl, PendingClientCtx as PendingClientCtxImpl,
-    ServerCtx as ServerCtxImpl,
+    PendingServerCtx as PendingServerCtxImpl, ServerCtx as ServerCtxImpl,
 };
 
 #[cfg(windows)]
@@ -124,17 +124,38 @@ mod windows;
 #[cfg(windows)]
 use crate::windows::{
     ClientCtx as ClientCtxImpl, PendingClientCtx as PendingClientCtxImpl,
-    ServerCtx as ServerCtxImpl,
+    PendingServerCtx as PendingServerCtxImpl, ServerCtx as ServerCtxImpl,
 };
+
+pub enum OrContinue<C, T> {
+    Finished(C),
+    Continue(T),
+}
 
 /// a half initialized client context
 pub struct PendingClientCtx(PendingClientCtxImpl);
 
 impl PendingClientCtx {
-    /// Finish initialization of the client context using the token
-    /// sent by the server.
-    pub fn finish(self, token: &[u8]) -> Result<ClientCtx> {
-        Ok(ClientCtx(self.0.finish(token)?))
+    /// Feed the server provided token to the underling implementation,
+    /// if the negotiation is complete then return the established context and optionally a token,
+    /// otherwise, return another token to pass to the server.
+    pub fn step(
+        self,
+        token: &[u8],
+    ) -> Result<
+        OrContinue<
+            (ClientCtx, Option<impl Deref<Target = [u8]>>),
+            (PendingClientCtx, impl Deref<Target = [u8]>),
+        >,
+    > {
+        Ok(match self.0.step(token)? {
+            OrContinue::Finished((ctx, tok)) => {
+                OrContinue::Finished((ClientCtx(ctx), tok))
+            }
+            OrContinue::Continue((ctx, tok)) => {
+                OrContinue::Continue((PendingClientCtx(ctx), tok))
+            }
+        })
     }
 }
 
@@ -219,9 +240,49 @@ bitflags! {
     }
 }
 
+pub struct PendingServerCtx(PendingServerCtxImpl);
+
+impl PendingServerCtx {
+    pub fn step(
+        self,
+        token: &[u8],
+    ) -> Result<
+        OrContinue<
+            (ServerCtx, Option<impl Deref<Target = [u8]>>),
+            (PendingServerCtx, impl Deref<Target = [u8]>),
+        >,
+    > {
+        Ok(match self.0.step(token)? {
+            OrContinue::Finished((ctx, tok)) => {
+                OrContinue::Finished((ServerCtx(ctx), tok))
+            }
+            OrContinue::Continue((ctx, tok)) => {
+                OrContinue::Continue((PendingServerCtx(ctx), tok))
+            }
+        })
+    }
+}
+
 /// A Kerberos server context
 #[derive(Debug)]
 pub struct ServerCtx(ServerCtxImpl);
+
+impl ServerCtx {
+    /// Accept a client request for `principal`. `principal` should be
+    /// the service principal name assigned to the service the client
+    /// is requesting.  If it is left as `None` it will use the user
+    /// running the current process. `token` should be the token
+    /// received from the client that initiated the request for
+    /// service. If the token sent by the client is valid, then the
+    /// context and a token to send back to the client will be
+    /// returned.
+    pub fn create(
+        flags: AcceptFlags,
+        principal: Option<&str>,
+    ) -> Result<PendingServerCtx> {
+        Ok(PendingServerCtx(ServerCtxImpl::create(flags, principal)?))
+    }
+}
 
 impl K5Ctx for ServerCtx {
     type Buffer = <ServerCtxImpl as K5Ctx>::Buffer;
@@ -245,25 +306,6 @@ impl K5Ctx for ServerCtx {
 
     fn ttl(&mut self) -> Result<Duration> {
         K5Ctx::ttl(&mut self.0)
-    }
-}
-
-impl ServerCtx {
-    /// Accept a client request for `principal`. `principal` should be
-    /// the service principal name assigned to the service the client
-    /// is requesting.  If it is left as `None` it will use the user
-    /// running the current process. `token` should be the token
-    /// received from the client that initiated the request for
-    /// service. If the token sent by the client is valid, then the
-    /// context and a token to send back to the client will be
-    /// returned.
-    pub fn accept(
-        flags: AcceptFlags,
-        principal: Option<&str>,
-        token: &[u8],
-    ) -> Result<(Self, impl Deref<Target = [u8]>)> {
-        let (ctx, token) = ServerCtxImpl::accept(flags, principal, token)?;
-        Ok((ServerCtx(ctx), token))
     }
 }
 
