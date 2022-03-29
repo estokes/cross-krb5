@@ -1,5 +1,8 @@
 0.3.0:
 - add support for channel bindings
+- major api rework. Unfortunatly I tried to simplify the api too much vs gssapi and sspi.
+  it turns out, the krb5 mechanism sometimes needs to exchange more than 3 tokens, specifically in the case of an error, in order to get a readable message extra tokens need to change hands.
+  I'm sorry for the churn. This rework does open the future possibility of supporting other mechanisms. Due to the complexity of doing that, and doing all the testing, I don't have an specific plans for that yet.
 
 0.2.0:
 - add support for flags. The first flag indicates that the supplied
