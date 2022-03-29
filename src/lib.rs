@@ -187,13 +187,13 @@ impl ClientCtx {
     /// token, and, if valid, will return a token of it's own, which
     /// must be passed to the `PendingClientCtx::finish` method to
     /// complete the initialization.
-    pub fn initiate(
+    pub fn new(
         flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
         channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let (pending, token) = ClientCtxImpl::initiate(
+        let (pending, token) = ClientCtxImpl::new(
             flags,
             principal,
             target_principal,
@@ -276,11 +276,11 @@ impl ServerCtx {
     /// service. If the token sent by the client is valid, then the
     /// context and a token to send back to the client will be
     /// returned.
-    pub fn create(
+    pub fn new(
         flags: AcceptFlags,
         principal: Option<&str>,
     ) -> Result<PendingServerCtx> {
-        Ok(PendingServerCtx(ServerCtxImpl::create(flags, principal)?))
+        Ok(PendingServerCtx(ServerCtxImpl::new(flags, principal)?))
     }
 }
 

@@ -132,7 +132,7 @@ pub struct ClientCtx {
 }
 
 impl ClientCtx {
-    pub(crate) fn initiate(
+    pub(crate) fn new(
         _flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
@@ -240,7 +240,7 @@ pub struct ServerCtx {
 }
 
 impl ServerCtx {
-    pub(crate) fn create(
+    pub(crate) fn new(
         _flags: AcceptFlags,
         principal: Option<&str>,
     ) -> Result<PendingServerCtx> {

@@ -334,7 +334,7 @@ enum InputData<'a> {
 }
 
 impl ClientCtx {
-    pub(crate) fn initiate(
+    pub(crate) fn new(
         flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
@@ -540,7 +540,7 @@ impl fmt::Debug for ServerCtx {
 }
 
 impl ServerCtx {
-    pub(crate) fn create(
+    pub(crate) fn new(
         flags: AcceptFlags,
         principal: Option<&str>,
     ) -> Result<PendingServerCtx> {
