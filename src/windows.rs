@@ -85,7 +85,7 @@ struct Cred(SecHandle);
 impl Drop for Cred {
     fn drop(&mut self) {
         unsafe {
-            FreeCredentialsHandle(&mut self.0 as *mut _);
+            FreeCredentialsHandle(&mut self.0);
         }
     }
 }
@@ -108,8 +108,8 @@ impl Cred {
                 ptr::null_mut(),
                 None,
                 ptr::null_mut(),
-                &mut cred as *mut _,
-                &mut lifetime as *mut _,
+                &mut cred,
+                &mut lifetime,
             )
         };
         if failed(res) {
@@ -123,7 +123,7 @@ impl Cred {
         let mut names = SecPkgCredentials_NamesW::default();
         unsafe {
             let res = QueryCredentialsAttributesW(
-                &mut self.0 as *mut _,
+                &mut self.0,
                 SECPKG_CRED_ATTR_NAMES,
                 &mut names as *mut _ as *mut c_void,
             );
@@ -138,19 +138,18 @@ impl Cred {
 fn alloc_krb5_buf() -> Result<Vec<u8>> {
     let mut ifo = ptr::null_mut::<SecPkgInfoW>();
     let mut pkg = str_to_wstr("Kerberos");
-    let res =
-        unsafe { QuerySecurityPackageInfoW(PCWSTR(pkg.as_mut_ptr()), &mut ifo as *mut _) };
+    let res = unsafe { QuerySecurityPackageInfoW(PCWSTR(pkg.as_mut_ptr()), &mut ifo) };
     if failed(res) {
         if ifo != ptr::null_mut() {
             unsafe {
-                FreeContextBuffer(ifo as *mut _);
+                FreeContextBuffer(ifo as *mut c_void);
             }
         }
         bail!("failed to query pkg info for Kerberos {}", format_error(res));
     }
     let max_len = unsafe { (*ifo).cbMaxToken };
     unsafe {
-        FreeContextBuffer(ifo as *mut _);
+        FreeContextBuffer(ifo as *mut c_void);
     }
     let mut buf = Vec::with_capacity(max_len as usize);
     buf.extend((0..max_len).into_iter().map(|_| 0));
@@ -159,11 +158,7 @@ fn alloc_krb5_buf() -> Result<Vec<u8>> {
 
 fn query_pkg_sizes(ctx: &mut SecHandle, sz: &mut SecPkgContext_Sizes) -> Result<()> {
     let res = unsafe {
-        QueryContextAttributesW(
-            ctx as *mut _,
-            SECPKG_ATTR_SIZES,
-            sz as *mut _ as *mut c_void,
-        )
+        QueryContextAttributesW(ctx, SECPKG_ATTR_SIZES, sz as *mut _ as *mut c_void)
     };
     if failed(res) {
         bail!("failed to query package sizes {}", format_error(res))
@@ -204,7 +199,7 @@ fn wrap_iov(
         pBuffers: buffers.as_mut_ptr(),
     };
     let flags = if !encrypt { KERB_WRAP_NO_ENCRYPT } else { 0 };
-    let res = unsafe { EncryptMessage(ctx as *mut _, flags, &mut buf_desc as *mut _, 0) };
+    let res = unsafe { EncryptMessage(ctx, flags, &mut buf_desc, 0) };
     if failed(res) {
         bail!("EncryptMessage failed {}", format_error(res))
     }
@@ -248,9 +243,7 @@ fn unwrap_iov(ctx: &mut SecHandle, len: usize, msg: &mut BytesMut) -> Result<Byt
         pBuffers: bufs.as_mut_ptr(),
     };
     let mut qop: u32 = 0;
-    let res = unsafe {
-        DecryptMessage(ctx as *mut _, &mut bufs_desc as *mut _, 0, &mut qop as *mut _)
-    };
+    let res = unsafe { DecryptMessage(ctx, &mut bufs_desc, 0, &mut qop) };
     if failed(res) {
         bail!("decrypt message failed {}", format_error(res))
     }
@@ -267,20 +260,14 @@ fn convert_lifetime(expires: i64) -> Result<Duration> {
     let mut lt = SYSTEMTIME::default();
     let mut ft = FILETIME::default();
     unsafe {
-        GetSystemTime(&mut st as *mut _);
-        if !SystemTimeToTzSpecificLocalTime(
-            ptr::null_mut(),
-            &st as *const _,
-            &mut lt as *mut _,
-        )
-        .as_bool()
-        {
+        GetSystemTime(&mut st);
+        if !SystemTimeToTzSpecificLocalTime(ptr::null_mut(), &st, &mut lt).as_bool() {
             bail!(
                 "failed to convert to local time {}",
                 format_error(GetLastError().0 as i32)
             )
         }
-        if !SystemTimeToFileTime(&lt as *const _, &mut ft as *mut _).as_bool() {
+        if !SystemTimeToFileTime(&lt, &mut ft).as_bool() {
             bail!(
                 "failed to convert current time to a filetime: {}",
                 format_error(GetLastError().0 as i32)
@@ -323,7 +310,7 @@ pub struct ClientCtx {
 impl Drop for ClientCtx {
     fn drop(&mut self) {
         unsafe {
-            DeleteSecurityContext(&mut self.ctx as *mut _);
+            DeleteSecurityContext(&mut self.ctx);
         }
     }
 }
@@ -379,12 +366,12 @@ impl ClientCtx {
         let mut out_buf = SecBuffer {
             cbBuffer: self.buf.len() as u32,
             BufferType: SECBUFFER_TOKEN,
-            pvBuffer: self.buf.as_mut_ptr() as *mut _,
+            pvBuffer: self.buf.as_mut_ptr() as *mut c_void,
         };
         let mut out_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
             cBuffers: 1,
-            pBuffers: &mut out_buf as *mut _,
+            pBuffers: &mut out_buf,
         };
         let mut cbt_buf;
         let mut in_buf = match data {
@@ -425,21 +412,19 @@ impl ClientCtx {
         let mut in_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
             cBuffers: 1,
-            pBuffers: &mut in_buf as *mut _,
+            pBuffers: &mut in_buf,
         };
         let ctx_ptr = match data {
             InputData::Initial(_) => ptr::null_mut(),
-            InputData::Subsequent(_) => &mut self.ctx as *mut _,
+            InputData::Subsequent(_) => &mut self.ctx,
         };
         let in_buf_ptr = match data {
-            InputData::Initial(Some(_)) | InputData::Subsequent(_) => {
-                &mut in_buf_desc as *mut _
-            }
+            InputData::Initial(Some(_)) | InputData::Subsequent(_) => &mut in_buf_desc,
             InputData::Initial(None) => ptr::null_mut(),
         };
         let res = unsafe {
             InitializeSecurityContextW(
-                &mut self.cred.0 as *mut _,
+                &mut self.cred.0,
                 ctx_ptr,
                 self.target.as_mut_ptr(),
                 ISC_REQ_CONFIDENTIALITY | ISC_REQ_MUTUAL_AUTH,
@@ -447,10 +432,10 @@ impl ClientCtx {
                 SECURITY_NATIVE_DREP,
                 in_buf_ptr,
                 0,
-                &mut self.ctx as *mut _,
-                &mut out_buf_desc as *mut _,
-                &mut self.attrs as *mut _,
-                &mut self.lifetime as *mut _,
+                &mut self.ctx,
+                &mut out_buf_desc,
+                &mut self.attrs,
+                &mut self.lifetime,
             )
         };
         if failed(res) {
@@ -461,7 +446,7 @@ impl ClientCtx {
             self.done = true;
         }
         if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
-            let res = unsafe { CompleteAuthToken(ctx_ptr, &mut out_buf_desc as *mut _) };
+            let res = unsafe { CompleteAuthToken(ctx_ptr, &mut out_buf_desc) };
             if failed(res) {
                 bail!("complete token failed {}", format_error(res))
             }
@@ -525,7 +510,7 @@ pub struct ServerCtx {
 impl Drop for ServerCtx {
     fn drop(&mut self) {
         unsafe {
-            DeleteSecurityContext(&mut self.ctx as *mut _);
+            DeleteSecurityContext(&mut self.ctx);
         }
     }
 }
@@ -572,12 +557,12 @@ impl ServerCtx {
         let mut out_buf = SecBuffer {
             cbBuffer: self.buf.len() as u32,
             BufferType: SECBUFFER_TOKEN,
-            pvBuffer: self.buf.as_mut_ptr() as *mut _,
+            pvBuffer: self.buf.as_mut_ptr() as *mut c_void,
         };
         let mut out_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
             cBuffers: 1,
-            pBuffers: &mut out_buf as *mut _,
+            pBuffers: &mut out_buf,
         };
         let mut in_buf = SecBuffer {
             cbBuffer: tok.len() as u32,
@@ -587,28 +572,28 @@ impl ServerCtx {
         let mut in_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
             cBuffers: 1,
-            pBuffers: &mut in_buf as *mut _,
+            pBuffers: &mut in_buf,
         };
         let dfsh = SecHandle::default();
         let ctx_ptr =
             if self.ctx.dwLower == dfsh.dwLower && self.ctx.dwUpper == dfsh.dwUpper {
                 ptr::null_mut()
             } else {
-                &mut self.ctx as *mut _
+                &mut self.ctx
             };
         let res = unsafe {
             AcceptSecurityContext(
-                &mut self.cred.0 as *mut _,
+                &mut self.cred.0,
                 ctx_ptr,
-                &mut in_buf_desc as *mut _,
+                &mut in_buf_desc,
                 ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ(
                     ISC_REQ_CONFIDENTIALITY | ISC_REQ_MUTUAL_AUTH,
                 ),
                 SECURITY_NATIVE_DREP,
-                &mut self.ctx as *mut _,
-                &mut out_buf_desc as *mut _,
-                &mut self.attrs as *mut _,
-                &mut self.lifetime as *mut _,
+                &mut self.ctx,
+                &mut out_buf_desc,
+                &mut self.attrs,
+                &mut self.lifetime,
             )
         };
         if failed(res) {
@@ -619,7 +604,7 @@ impl ServerCtx {
             self.done = true;
         }
         if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
-            let res = unsafe { CompleteAuthToken(ctx_ptr, &mut out_buf_desc as *mut _) };
+            let res = unsafe { CompleteAuthToken(&self.ctx, &mut out_buf_desc) };
             if failed(res) {
                 bail!("complete token failed {}", format_error(res))
             }
@@ -673,7 +658,7 @@ impl K5ServerCtx for ServerCtx {
         let mut names = SecPkgContext_NativeNamesW::default();
         unsafe {
             let res = QueryContextAttributesW(
-                &mut self.ctx as *mut _,
+                &mut self.ctx,
                 SECPKG_ATTR_NATIVE_NAMES,
                 &mut names as *mut _ as *mut c_void,
             );
