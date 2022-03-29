@@ -1,5 +1,5 @@
-use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx};
-use anyhow::{anyhow, bail, Error, Result};
+use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx, OrContinue};
+use anyhow::{anyhow, Error, Result};
 use bytes::BytesMut;
 use bytes::{self, buf::Chain, Buf as _};
 #[cfg(feature = "iov")]
@@ -93,18 +93,32 @@ fn unwrap_iov(
 }
 
 #[derive(Debug)]
-pub struct PendingClientCtx(GssClientCtx);
+pub(crate) struct PendingClientCtx(GssClientCtx);
 
 impl PendingClientCtx {
-    pub fn finish(mut self, token: &[u8]) -> Result<ClientCtx> {
-        if self.0.step(Some(token), None)?.is_some() {
-            bail!("unexpected second client token")
+    pub(crate) fn step(
+        mut self,
+        token: &[u8],
+    ) -> Result<
+        OrContinue<
+            (ClientCtx, Option<impl Deref<Target = [u8]>>),
+            (PendingClientCtx, impl Deref<Target = [u8]>),
+        >,
+    > {
+        fn cc(gss: GssClientCtx) -> ClientCtx {
+            ClientCtx {
+                gss,
+                header: BytesMut::new(),
+                padding: BytesMut::new(),
+                trailer: BytesMut::new(),
+            }
         }
-        Ok(ClientCtx {
-            gss: self.0,
-            header: BytesMut::new(),
-            padding: BytesMut::new(),
-            trailer: BytesMut::new(),
+        Ok(match self.0.step(Some(token), None)? {
+            None => OrContinue::Finished((cc(self.0), None)),
+            Some(tok) if self.0.is_complete() => {
+                OrContinue::Finished((cc(self.0), Some(tok)))
+            }
+            Some(tok) => OrContinue::Continue((self, tok)),
         })
     }
 }
@@ -118,7 +132,7 @@ pub struct ClientCtx {
 }
 
 impl ClientCtx {
-    pub fn initiate(
+    pub(crate) fn initiate(
         _flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
@@ -187,6 +201,37 @@ impl K5Ctx for ClientCtx {
 }
 
 #[derive(Debug)]
+pub(crate) struct PendingServerCtx(GssServerCtx);
+
+impl PendingServerCtx {
+    pub(crate) fn step(
+        mut self,
+        token: &[u8],
+    ) -> Result<
+        OrContinue<
+            (ServerCtx, Option<impl Deref<Target = [u8]>>),
+            (PendingServerCtx, impl Deref<Target = [u8]>),
+        >,
+    > {
+        fn cc(gss: GssServerCtx) -> ServerCtx {
+            ServerCtx {
+                gss,
+                header: BytesMut::new(),
+                padding: BytesMut::new(),
+                trailer: BytesMut::new(),
+            }
+        }
+        Ok(match self.0.step(token)? {
+            None => OrContinue::Finished((cc(self.0), None)),
+            Some(tok) if self.0.is_complete() => {
+                OrContinue::Finished((cc(self.0), Some(tok)))
+            }
+            Some(tok) => OrContinue::Continue((self, tok)),
+        })
+    }
+}
+
+#[derive(Debug)]
 pub struct ServerCtx {
     gss: GssServerCtx,
     header: BytesMut,
@@ -195,11 +240,10 @@ pub struct ServerCtx {
 }
 
 impl ServerCtx {
-    pub fn accept(
+    pub(crate) fn create(
         _flags: AcceptFlags,
         principal: Option<&str>,
-        token: &[u8],
-    ) -> Result<(ServerCtx, impl Deref<Target = [u8]>)> {
+    ) -> Result<PendingServerCtx> {
         let name = principal
             .map(|principal| -> Result<Name> {
                 Ok(Name::new(principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
@@ -211,18 +255,7 @@ impl ServerCtx {
             s.add(&GSS_MECH_KRB5)?;
             Cred::acquire(name.as_ref(), None, CredUsage::Accept, Some(&s))?
         };
-        let mut ctx = ServerCtx {
-            gss: GssServerCtx::new(cred),
-            header: BytesMut::new(),
-            padding: BytesMut::new(),
-            trailer: BytesMut::new(),
-        };
-        let token = ctx
-            .gss
-            .step(token)
-            .map_err(|e| Error::from(e))?
-            .ok_or_else(|| anyhow!("expected token"))?;
-        Ok((ctx, token))
+        Ok(PendingServerCtx(GssServerCtx::new(cred)))
     }
 }
 
