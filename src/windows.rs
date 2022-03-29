@@ -10,36 +10,40 @@ use std::{
     ptr,
     time::Duration,
 };
-use windows::Win32::{
-    Foundation::{
-        GetLastError, FILETIME, PWSTR, SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE,
-        SEC_I_COMPLETE_NEEDED, SYSTEMTIME,
-    },
-    Globalization::lstrlenW,
-    Security::{
-        Authentication::Identity::{
-            AcceptSecurityContext, AcquireCredentialsHandleW, CompleteAuthToken,
-            DecryptMessage, DeleteSecurityContext, EncryptMessage, FreeContextBuffer,
-            FreeCredentialsHandle, InitializeSecurityContextW, QueryContextAttributesW,
-            QueryCredentialsAttributesW, QuerySecurityPackageInfoW, SecBuffer,
-            SecBufferDesc, SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
-            SecPkgCredentials_NamesW, SecPkgInfoW, ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ,
-            ISC_REQ_CONFIDENTIALITY, ISC_REQ_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
-            SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_DATA, SECBUFFER_PADDING,
-            SECBUFFER_STREAM, SECBUFFER_TOKEN, SECBUFFER_VERSION,
-            SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES, SECPKG_CRED_ATTR_NAMES,
-            SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP,
-            SEC_CHANNEL_BINDINGS,
+use windows::{
+    core::{PCWSTR, PWSTR},
+    Win32::{
+        Foundation::{
+            GetLastError, FILETIME, SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE,
+            SEC_I_COMPLETE_NEEDED, SYSTEMTIME,
         },
-        Credentials::SecHandle,
-    },
-    System::{
-        Diagnostics::Debug::{
-            FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS,
+        Globalization::lstrlenW,
+        Security::{
+            Authentication::Identity::{
+                AcceptSecurityContext, AcquireCredentialsHandleW, CompleteAuthToken,
+                DecryptMessage, DeleteSecurityContext, EncryptMessage, FreeContextBuffer,
+                FreeCredentialsHandle, InitializeSecurityContextW,
+                QueryContextAttributesW, QueryCredentialsAttributesW,
+                QuerySecurityPackageInfoW, SecBuffer, SecBufferDesc,
+                SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
+                SecPkgCredentials_NamesW, SecPkgInfoW,
+                ACCEPT_SECURITY_CONTEXT_CONTEXT_REQ, ISC_REQ_CONFIDENTIALITY,
+                ISC_REQ_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT, SECBUFFER_CHANNEL_BINDINGS,
+                SECBUFFER_DATA, SECBUFFER_PADDING, SECBUFFER_STREAM, SECBUFFER_TOKEN,
+                SECBUFFER_VERSION, SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES,
+                SECPKG_CRED_ATTR_NAMES, SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND,
+                SECURITY_NATIVE_DREP, SEC_CHANNEL_BINDINGS,
+            },
+            Credentials::SecHandle,
         },
-        SystemInformation::GetSystemTime,
-        SystemServices::{LANG_NEUTRAL, SUBLANG_NEUTRAL},
-        Time::{SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime},
+        System::{
+            Diagnostics::Debug::{
+                FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS,
+            },
+            SystemInformation::GetSystemTime,
+            SystemServices::{LANG_NEUTRAL, SUBLANG_NEUTRAL},
+            Time::{SystemTimeToFileTime, SystemTimeToTzSpecificLocalTime},
+        },
     },
 };
 
@@ -48,7 +52,7 @@ fn failed(res: i32) -> bool {
 }
 
 unsafe fn string_from_wstr(s: *mut u16) -> String {
-    let slen = lstrlenW(PWSTR(s));
+    let slen = lstrlenW(PCWSTR(s));
     let slice = &*ptr::slice_from_raw_parts(s, slen as usize);
     OsString::from_wide(slice).to_string_lossy().to_string()
 }
@@ -97,8 +101,8 @@ impl Cred {
         let mut lifetime = 0i64;
         let res = unsafe {
             AcquireCredentialsHandleW(
-                PWSTR(principal_ptr),
-                PWSTR(package.as_mut_ptr()),
+                PCWSTR(principal_ptr),
+                PCWSTR(package.as_mut_ptr()),
                 dir,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -135,7 +139,7 @@ fn alloc_krb5_buf() -> Result<Vec<u8>> {
     let mut ifo = ptr::null_mut::<SecPkgInfoW>();
     let mut pkg = str_to_wstr("Kerberos");
     let res =
-        unsafe { QuerySecurityPackageInfoW(PWSTR(pkg.as_mut_ptr()), &mut ifo as *mut _) };
+        unsafe { QuerySecurityPackageInfoW(PCWSTR(pkg.as_mut_ptr()), &mut ifo as *mut _) };
     if failed(res) {
         if ifo != ptr::null_mut() {
             unsafe {
