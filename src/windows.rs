@@ -446,7 +446,7 @@ impl ClientCtx {
             self.done = true;
         }
         if res == SEC_I_COMPLETE_AND_CONTINUE.0 || res == SEC_I_COMPLETE_NEEDED.0 {
-            let res = unsafe { CompleteAuthToken(ctx_ptr, &mut out_buf_desc) };
+            let res = unsafe { CompleteAuthToken(&self.ctx, &mut out_buf_desc) };
             if failed(res) {
                 bail!("complete token failed {}", format_error(res))
             }
