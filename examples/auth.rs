@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use cross_krb5::{AcceptFlags, ClientCtx, InitiateFlags, K5Ctx, OrContinue, ServerCtx};
+use cross_krb5::{AcceptFlags, ClientCtx, InitiateFlags, K5Ctx, Step, ServerCtx};
 use std::{env::args, process::exit, sync::mpsc, thread};
 
 enum Msg {
@@ -15,13 +15,13 @@ fn server(spn: String, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
             Msg::Token(t) => t,
         };
         match server.step(&*token).expect("step") {
-            OrContinue::Finished((ctx, token)) => {
+            Step::Finished((ctx, token)) => {
                 if let Some(token) = token {
                     output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
                 }
                 break ctx
             },
-            OrContinue::Continue((ctx, token)) => {
+            Step::Continue((ctx, token)) => {
                 output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
                 server = ctx;
             }
@@ -46,13 +46,13 @@ fn client(spn: &str, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
             Msg::Token(t) => t,
         };
         match client.step(&*token).expect("step") {
-            OrContinue::Finished((ctx, token)) => {
+            Step::Finished((ctx, token)) => {
                 if let Some(token) = token {
                     output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
                 }
                 break ctx
             },
-            OrContinue::Continue((ctx, token)) => {
+            Step::Continue((ctx, token)) => {
                 output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
                 client = ctx;
             }

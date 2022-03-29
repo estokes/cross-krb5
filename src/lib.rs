@@ -1,10 +1,8 @@
 //! # Cross Platform Kerberos 5 Interface
 //!
-//! cross-krb5 is a simplified and safe interface for basic Kerberos 5
-//! services on Windows and Unix. It provides most of the flexibility
-//! of using gssapi and sspi directly, but with the reduced api
-//! complexity that comes from specifically targeting only the
-//! Kerberos 5 mechanism.
+//! cross-krb5 is a safe interface for Kerberos 5 services on Windows
+//! and Unix. It provides most of the flexibility of using gssapi and
+//! sspi directly with a unified cross platform api.
 //!
 //! As well as providing a uniform API, services using cross-krb5
 //! should interoperate across all the supported OSes transparently,
@@ -13,46 +11,82 @@
 //!
 //! # Example
 //! ```no_run
-//! # use anyhow::Result;
-//! # fn run(spn: &str) -> Result<()> {
-//! use cross_krb5::{
-//!     ClientCtx,
-//!     ServerCtx,
-//!     K5Ctx,
-//!     K5ServerCtx,
-//!     InitiateFlags,
-//!     AcceptFlags
-//! };
+//! use bytes::Bytes;
+//! use cross_krb5::{AcceptFlags, ClientCtx, InitiateFlags, K5Ctx, Step, ServerCtx};
+//! use std::{env::args, process::exit, sync::mpsc, thread};
 //!
-//! // make a pending context and a token to connect to `service/host@REALM`
-//! let (pending, token) = ClientCtx::initiate(
-//!      InitiateFlags::empty(),
-//!      None,
-//!      "service/host@REALM",
-//!      None
-//! )?;
+//! enum Msg {
+//!     Token(Bytes),
+//!     Msg(Bytes),
+//! }
 //!
-//! // accept the client's token for `service/host@REALM`. The token from the client
-//! // is accepted, and, if valid, the server end of the context and a token
-//! // for the client will be created.
-//! let (mut server, token) = ServerCtx::accept(
-//!      AcceptFlags::empty(),
-//!      Some("service/host@REALM"),
-//!      &*token
-//! )?;
+//! fn server(spn: String, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
+//!     let mut server = ServerCtx::new(AcceptFlags::empty(), Some(&spn)).expect("new");
+//!     let mut server = loop {
+//!         let token = match input.recv().expect("expected data") {
+//!             Msg::Msg(_) => panic!("server not finished initializing"),
+//!             Msg::Token(t) => t,
+//!         };
+//!         match server.step(&*token).expect("step") {
+//!             Step::Finished((ctx, token)) => {
+//!                 if let Some(token) = token {
+//!                     output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+//!                 }
+//!                 break ctx
+//!             },
+//!             Step::Continue((ctx, token)) => {
+//!                 output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+//!                 server = ctx;
+//!             }
+//!         }
+//!     };
+//!     match input.recv().expect("expected data msg") {
+//!         Msg::Token(_) => panic!("unexpected extra token"),
+//!         Msg::Msg(secret_msg) => println!(
+//!             "{}",
+//!             String::from_utf8_lossy(&server.unwrap(&*secret_msg).expect("unwrap"))
+//!         ),
+//!     }
+//! }
 //!
-//! // use the server supplied token to finish initializing the pending client context.
-//! // Now encrypted communication between the two contexts is possible, and mutual
-//! // authentication has succeeded.
-//! let mut client = pending.finish(&*token)?;
+//! fn client(spn: &str, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
+//!     let (mut client, token) =
+//!         ClientCtx::new(InitiateFlags::empty(), None, spn, None).expect("new");
+//!     output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+//!     let mut client = loop {
+//!         let token = match input.recv().expect("expected data") {
+//!             Msg::Msg(_) => panic!("client not finished initializing"),
+//!             Msg::Token(t) => t,
+//!         };
+//!         match client.step(&*token).expect("step") {
+//!             Step::Finished((ctx, token)) => {
+//!                 if let Some(token) = token {
+//!                     output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+//!                 }
+//!                 break ctx
+//!             },
+//!             Step::Continue((ctx, token)) => {
+//!                 output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+//!                 client = ctx;
+//!             }
+//!         }
+//!     };
+//!     let msg = client.wrap(true, b"super secret message").expect("wrap");
+//!     output.send(Msg::Msg(Bytes::copy_from_slice(&*msg))).expect("send");
+//! }
 //!
-//! // send secret messages
-//! let secret_msg = client.wrap(true, b"super secret message")?;
-//! println!("{}", String::from_utf8_lossy(&server.unwrap(&*secret_msg)?));
-//!
-//! // ... profit!
-//!# Ok(())
-//!# }
+//! fn main() {
+//!     let args = args().collect::<Vec<_>>();
+//!     if args.len() != 2 {
+//!         println!("usage: {}: <service/host@REALM>", args[0]);
+//!         exit(1);
+//!     }
+//!     let spn = String::from(&args[1]);
+//!     let (server_snd, server_recv) = mpsc::channel();
+//!     let (client_snd, client_recv) = mpsc::channel();
+//!     thread::spawn(move || server(spn, server_recv, client_snd));
+//!     client(&args[1], client_recv, server_snd);
+//! }
 //! ```
 
 use anyhow::Result;
@@ -127,33 +161,36 @@ use crate::windows::{
     PendingServerCtx as PendingServerCtxImpl, ServerCtx as ServerCtxImpl,
 };
 
-pub enum OrContinue<C, T> {
+pub enum Step<C, T> {
     Finished(C),
     Continue(T),
 }
 
-/// a half initialized client context
+/// a partly initialized client context
 pub struct PendingClientCtx(PendingClientCtxImpl);
 
 impl PendingClientCtx {
-    /// Feed the server provided token to the underling implementation,
-    /// if the negotiation is complete then return the established context and optionally a token,
-    /// otherwise, return another token to pass to the server.
+    /// Feed the server provided token to the client context,
+    /// performing one step of the initialization. If the
+    /// initialization is complete then return the established context
+    /// and optionally a final token that must be sent to the server,
+    /// otherwise return the pending context and another token to pass
+    /// to the server.
     pub fn step(
         self,
         token: &[u8],
     ) -> Result<
-        OrContinue<
+        Step<
             (ClientCtx, Option<impl Deref<Target = [u8]>>),
             (PendingClientCtx, impl Deref<Target = [u8]>),
         >,
     > {
         Ok(match self.0.step(token)? {
-            OrContinue::Finished((ctx, tok)) => {
-                OrContinue::Finished((ClientCtx(ctx), tok))
+            Step::Finished((ctx, tok)) => {
+                Step::Finished((ClientCtx(ctx), tok))
             }
-            OrContinue::Continue((ctx, tok)) => {
-                OrContinue::Continue((PendingClientCtx(ctx), tok))
+            Step::Continue((ctx, tok)) => {
+                Step::Continue((PendingClientCtx(ctx), tok))
             }
         })
     }
@@ -173,32 +210,29 @@ bitflags! {
 pub struct ClientCtx(ClientCtxImpl);
 
 impl ClientCtx {
-    /// Initiate a client context to `target_principal`. If
-    /// `principal` is `None` then the credentials of the user running
-    /// current process will be used. `target_principal` must be the
-    /// service principal name of the service you intend to
-    /// communicate with. This should be an spn as described by
-    /// GSSAPI, e.g. `service/host@REALM`. If present, `channel_bindings` is
-    /// a service-specific channel binding token which will be part
-    /// of the initial communication with the server.
+    /// create a new client context for speaking to
+    /// `target_principal`. If `principal` is `None` then the
+    /// credentials of the user running current process will be
+    /// used. `target_principal` must be the service principal name of
+    /// the service you intend to communicate with. This should be an
+    /// spn as described by GSSAPI, e.g. `service/host@REALM`. If
+    /// present, `channel_bindings` is a service-specific channel
+    /// binding token which will be part of the initial communication
+    /// with the server.
     ///
     /// On success a `PendingClientCtx` and a token to be sent to the
-    /// server will be returned. The server will accept the client
-    /// token, and, if valid, will return a token of it's own, which
-    /// must be passed to the `PendingClientCtx::finish` method to
-    /// complete the initialization.
+    /// server will be returned. The server and client may generate
+    /// multiple additional tokens, which must be passed to the their
+    /// respective `step` methods until the initialization is
+    /// complete.
     pub fn new(
         flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
         channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let (pending, token) = ClientCtxImpl::new(
-            flags,
-            principal,
-            target_principal,
-            channel_bindings,
-        )?;
+        let (pending, token) =
+            ClientCtxImpl::new(flags, principal, target_principal, channel_bindings)?;
         Ok((PendingClientCtx(pending), token))
     }
 }
@@ -247,17 +281,17 @@ impl PendingServerCtx {
         self,
         token: &[u8],
     ) -> Result<
-        OrContinue<
+        Step<
             (ServerCtx, Option<impl Deref<Target = [u8]>>),
             (PendingServerCtx, impl Deref<Target = [u8]>),
         >,
     > {
         Ok(match self.0.step(token)? {
-            OrContinue::Finished((ctx, tok)) => {
-                OrContinue::Finished((ServerCtx(ctx), tok))
+            Step::Finished((ctx, tok)) => {
+                Step::Finished((ServerCtx(ctx), tok))
             }
-            OrContinue::Continue((ctx, tok)) => {
-                OrContinue::Continue((PendingServerCtx(ctx), tok))
+            Step::Continue((ctx, tok)) => {
+                Step::Continue((PendingServerCtx(ctx), tok))
             }
         })
     }
@@ -268,18 +302,13 @@ impl PendingServerCtx {
 pub struct ServerCtx(ServerCtxImpl);
 
 impl ServerCtx {
-    /// Accept a client request for `principal`. `principal` should be
+    /// Create a new server context for `principal`, which should be
     /// the service principal name assigned to the service the client
-    /// is requesting.  If it is left as `None` it will use the user
-    /// running the current process. `token` should be the token
-    /// received from the client that initiated the request for
-    /// service. If the token sent by the client is valid, then the
-    /// context and a token to send back to the client will be
-    /// returned.
-    pub fn new(
-        flags: AcceptFlags,
-        principal: Option<&str>,
-    ) -> Result<PendingServerCtx> {
+    /// will be requesting. If it is left as `None` it will use the
+    /// user running the current process. The returned pending context
+    /// must be initiaized by exchanging one or more tokens with the
+    /// client before it can be used.
+    pub fn new(flags: AcceptFlags, principal: Option<&str>) -> Result<PendingServerCtx> {
         Ok(PendingServerCtx(ServerCtxImpl::new(flags, principal)?))
     }
 }

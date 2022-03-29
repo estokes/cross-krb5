@@ -1,4 +1,4 @@
-use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx, OrContinue};
+use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx, Step};
 use anyhow::{anyhow, bail, Result};
 use bytes::{buf::Chain, Buf, BytesMut};
 use std::{
@@ -287,15 +287,15 @@ impl PendingClientCtx {
         mut self,
         token: &[u8],
     ) -> Result<
-        OrContinue<
+        Step<
             (ClientCtx, Option<impl Deref<Target = [u8]>>),
             (PendingClientCtx, impl Deref<Target = [u8]>),
         >,
     > {
         Ok(match self.0.do_step(InputData::Subsequent(token))? {
-            None => OrContinue::Finished((self.0, None)),
-            Some(tok) if self.0.done => OrContinue::Finished((self.0, Some(tok))),
-            Some(tok) => OrContinue::Continue((self, tok)),
+            None => Step::Finished((self.0, None)),
+            Some(tok) if self.0.done => Step::Finished((self.0, Some(tok))),
+            Some(tok) => Step::Continue((self, tok)),
         })
     }
 }
@@ -500,15 +500,15 @@ impl PendingServerCtx {
         mut self,
         tok: &[u8],
     ) -> Result<
-        OrContinue<
+        Step<
             (ServerCtx, Option<impl Deref<Target = [u8]>>),
             (PendingServerCtx, impl Deref<Target = [u8]>),
         >,
     > {
         Ok(match self.0.do_step(tok)? {
-            None => OrContinue::Finished((self.0, None)),
-            Some(tok) if self.0.done => OrContinue::Finished((self.0, Some(tok))),
-            Some(tok) => OrContinue::Continue((self, tok)),
+            None => Step::Finished((self.0, None)),
+            Some(tok) if self.0.done => Step::Finished((self.0, Some(tok))),
+            Some(tok) => Step::Continue((self, tok)),
         })
     }
 }

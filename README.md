@@ -1,10 +1,8 @@
 # Cross Platform Kerberos 5 Interface
 
-cross-krb5 is a simplified and safe interface for basic Kerberos 5
-services on Windows and Unix. It provides most of the
-flexibility of using gssapi and sspi directly, but with the
-reduced api complexity that comes from specifically targeting only
-the Kerberos 5 mechanism.
+cross-krb5 is a safe interface for Kerberos 5 services on Windows
+and Unix. It provides most of the flexibility of using gssapi and
+sspi directly with a unified cross platform api.
 
 As well as providing a uniform API, services using cross-krb5
 should interoperate across all the supported OSes transparently,
@@ -13,38 +11,80 @@ platform specific.
 
 # Example
 ```rust
-use cross_krb5::{
-    ClientCtx, 
-    ServerCtx, 
-    K5Ctx, 
-    AcceptFlags, 
-    InitiateFlags
-};
+use bytes::Bytes;
+use cross_krb5::{AcceptFlags, ClientCtx, InitiateFlags, K5Ctx, Step, ServerCtx};
+use std::{env::args, process::exit, sync::mpsc, thread};
 
-// make a pending context and a token to connect to `service/host@REALM`
-let (pending, token) = ClientCtx::initiate(
-    InitiateFlags::empty(), 
-    None, 
-    "service/host@REALM",
-    None
-)?;
+enum Msg {
+    Token(Bytes),
+    Msg(Bytes),
+}
 
-// accept the client's token for `service/host@REALM`. The token from the client
-// is accepted, and, if valid, the server end of the context and a token
-// for the client will be created.
-let (mut server, token) = ServerCtx::accept(
-    AcceptFlags::empty(), 
-    Some("service/host@REALM"), &*token
-)?;
+fn server(spn: String, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
+    let mut server = ServerCtx::new(AcceptFlags::empty(), Some(&spn)).expect("new");
+    let mut server = loop {
+        let token = match input.recv().expect("expected data") {
+            Msg::Msg(_) => panic!("server not finished initializing"),
+            Msg::Token(t) => t,
+        };
+        match server.step(&*token).expect("step") {
+            Step::Finished((ctx, token)) => {
+                if let Some(token) = token {
+                    output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+                }
+                break ctx
+            },
+            Step::Continue((ctx, token)) => {
+                output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+                server = ctx;
+            }
+        }
+    };
+    match input.recv().expect("expected data msg") {
+        Msg::Token(_) => panic!("unexpected extra token"),
+        Msg::Msg(secret_msg) => println!(
+            "{}",
+            String::from_utf8_lossy(&server.unwrap(&*secret_msg).expect("unwrap"))
+        ),
+    }
+}
 
-// use the server supplied token to finish initializing the pending client context.
-// Now encrypted communication between the two contexts is possible, and mutual
-// authentication has succeeded.
-let mut client = pending.finish(&*token)?;
+fn client(spn: &str, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
+    let (mut client, token) =
+        ClientCtx::new(InitiateFlags::empty(), None, spn, None).expect("new");
+    output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+    let mut client = loop {
+        let token = match input.recv().expect("expected data") {
+            Msg::Msg(_) => panic!("client not finished initializing"),
+            Msg::Token(t) => t,
+        };
+        match client.step(&*token).expect("step") {
+            Step::Finished((ctx, token)) => {
+                if let Some(token) = token {
+                    output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+                }
+                break ctx
+            },
+            Step::Continue((ctx, token)) => {
+                output.send(Msg::Token(Bytes::copy_from_slice(&*token))).expect("send");
+                client = ctx;
+            }
+        }
+    };
+    let msg = client.wrap(true, b"super secret message").expect("wrap");
+    output.send(Msg::Msg(Bytes::copy_from_slice(&*msg))).expect("send");
+}
 
-// send secret messages
-let secret_msg = client.wrap(true, b"super secret message")?;
-println!("{}", String::from_utf8_lossy(&server.unwrap(&*secret_msg)?));
-
-// ... profit!
+fn main() {
+    let args = args().collect::<Vec<_>>();
+    if args.len() != 2 {
+        println!("usage: {}: <service/host@REALM>", args[0]);
+        exit(1);
+    }
+    let spn = String::from(&args[1]);
+    let (server_snd, server_recv) = mpsc::channel();
+    let (client_snd, client_recv) = mpsc::channel();
+    thread::spawn(move || server(spn, server_recv, client_snd));
+    client(&args[1], client_recv, server_snd);
+}
 ```
