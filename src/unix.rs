@@ -153,7 +153,7 @@ impl ClientCtx {
             Cred::acquire(name.as_ref(), None, CredUsage::Initiate, Some(&s))?
         };
         let mut gss = GssClientCtx::new(
-            cred,
+            Some(cred),
             target,
             CtxFlags::GSS_C_MUTUAL_FLAG,
             Some(&GSS_MECH_KRB5),
