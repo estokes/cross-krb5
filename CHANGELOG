@@ -1,3 +1,8 @@
+0.4.0:
+- upgrade windows-rs to 0.52, there are massive changes between 0.34 and 0.52
+so I'm bumping to 0.4 in case there is a problem
+- upgrade libgssapi
+
 0.3.0:
 - add support for channel bindings
 - major api rework. Unfortunatly I tried to simplify the api too much
