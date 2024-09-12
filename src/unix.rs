@@ -255,7 +255,7 @@ impl ServerCtx {
             s.add(&GSS_MECH_KRB5)?;
             Cred::acquire(name.as_ref(), None, CredUsage::Accept, Some(&s))?
         };
-        Ok(PendingServerCtx(GssServerCtx::new(cred)))
+        Ok(PendingServerCtx(GssServerCtx::new(Some(cred))))
     }
 }
 
