@@ -1,6 +1,10 @@
+0.4.1: 
+- upgrade windows-rs to 0.58
+- upgrade libgssapi to 0.8.0
+
 0.4.0:
 - upgrade windows-rs to 0.52, there are massive changes between 0.34 and 0.52
-so I'm bumping to 0.4 in case there is a problem
+  so I'm bumping to 0.4 in case there is a problem
 - upgrade libgssapi
 
 0.3.0:
