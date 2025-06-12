@@ -1,5 +1,5 @@
-use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx, Step};
-use anyhow::{anyhow, bail, Context};
+use super::{AcceptFlags, InitiateFlags, K5Cred, K5Ctx, K5ServerCtx, Step};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::{buf::Chain, Buf, BytesMut};
 use std::{
     default::Default,
@@ -77,7 +77,8 @@ fn format_error(error: i32) -> String {
     unsafe { string_from_wstr(msg.as_mut_ptr()) }
 }
 
-struct Cred(SecHandle);
+#[derive(Debug)]
+pub(crate) struct Cred(SecHandle);
 
 impl Drop for Cred {
     fn drop(&mut self) {
@@ -89,6 +90,11 @@ impl Drop for Cred {
 impl From<SecHandle> for Cred {
     fn from(handle: SecHandle) -> Self {
         Cred(handle)
+    }
+}
+impl Into<SecHandle> for Cred {
+    fn into(self) -> SecHandle {
+        self.0
     }
 }
 
@@ -129,6 +135,16 @@ impl Cred {
             .context("querying credential names")?;
             Ok(string_from_wstr(names.sUserName))
         }
+    }
+}
+
+impl K5Cred for Cred {
+    fn server_acquire(flags: AcceptFlags, principal: Option<&str>) -> anyhow::Result<Self> {
+        Self::acquire(flags.contains(AcceptFlags::NEGOTIATE_TOKEN), principal, true)
+    }
+
+    fn client_acquire(flags: InitiateFlags, principal: Option<&str>) -> anyhow::Result<Self> {
+        Self::acquire(flags.contains(InitiateFlags::NEGOTIATE_TOKEN), principal, false)
     }
 }
 
@@ -323,13 +339,21 @@ impl ClientCtx {
         target_principal: &str,
         cb_token: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
+        Self::new_with_cred(
+            Cred::client_acquire(flags, principal)?,
+            target_principal,
+            cb_token,
+        )
+    }
+
+    pub(crate) fn new_with_cred(
+        cred: Cred,
+        target_principal: &str,
+        cb_token: Option<&[u8]>,
+    ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let mut ctx = ClientCtx {
             ctx: SecHandle::default(),
-            cred: Cred::acquire(
-                flags.contains(InitiateFlags::NEGOTIATE_TOKEN),
-                principal,
-                false,
-            )?,
+            cred,
             target: str_to_wstr(target_principal),
             attrs: 0,
             lifetime: 0,
@@ -529,13 +553,17 @@ impl ServerCtx {
         flags: AcceptFlags,
         principal: Option<&str>,
     ) -> Result<PendingServerCtx> {
+        Self::new_with_cred(
+            Cred::server_acquire(flags, principal)?
+        )
+    }
+
+    pub(crate) fn new_with_cred(
+        cred: Cred
+    ) -> Result<PendingServerCtx> {
         Ok(PendingServerCtx(ServerCtx {
             ctx: SecHandle::default(),
-            cred: Cred::acquire(
-                flags.contains(AcceptFlags::NEGOTIATE_TOKEN),
-                principal,
-                true,
-            )?,
+            cred,
             buf: alloc_krb5_buf()?,
             attrs: 0,
             lifetime: 0,
@@ -630,13 +658,13 @@ impl K5Ctx for ServerCtx {
         Ok(self.header.split().chain(msg.chain(self.padding.split())))
     }
 
-    fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
-        unwrap_iov(&mut self.ctx, len, msg)
-    }
-
     fn unwrap(&mut self, msg: &[u8]) -> Result<BytesMut> {
         let mut buf = BytesMut::from(msg);
         self.unwrap_iov(buf.len(), &mut buf)
+    }
+
+    fn unwrap_iov(&mut self, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+        unwrap_iov(&mut self.ctx, len, msg)
     }
 
     fn ttl(&mut self) -> Result<Duration> {

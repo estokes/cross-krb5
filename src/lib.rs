@@ -94,6 +94,7 @@ extern crate bitflags;
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
 use std::{ops::Deref, time::Duration};
+use ::windows::Win32::Security::Credentials::SecHandle;
 
 pub trait K5Cred: Sized {
     fn server_acquire(
@@ -172,6 +173,7 @@ mod windows;
 use crate::windows::{
     ClientCtx as ClientCtxImpl, PendingClientCtx as PendingClientCtxImpl,
     PendingServerCtx as PendingServerCtxImpl, ServerCtx as ServerCtxImpl,
+    Cred as CredImpl
 };
 
 pub enum Step<C, T> {
@@ -205,6 +207,20 @@ impl From<libgssapi::credential::Cred> for Cred {
 #[cfg(unix)]
 impl Into<libgssapi::credential::Cred> for Cred {
     fn into(self) -> libgssapi::credential::Cred {
+        self.0.into()
+    }
+}
+
+#[cfg(windows)]
+impl From<SecHandle> for Cred {
+    fn from(value: SecHandle) -> Self {
+        Cred(CredImpl::from(value))
+    }
+}
+
+#[cfg(windows)]
+impl Into<SecHandle> for Cred {
+    fn into(self) -> SecHandle {
         self.0.into()
     }
 }
