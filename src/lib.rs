@@ -89,11 +89,23 @@
 //! }
 //! ```
 
+#[macro_use]
+extern crate bitflags;
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
 use std::{ops::Deref, time::Duration};
-#[macro_use]
-extern crate bitflags;
+
+pub trait K5Cred: Sized {
+    fn server_acquire(
+        _flags: AcceptFlags,
+        principal: Option<&str>,
+    ) -> Result<Self>;
+
+    fn client_acquire(
+        _flags: InitiateFlags,
+        principal: Option<&str>,
+    ) -> Result<Self>;
+}
 
 pub trait K5Ctx {
     type Buffer: Deref<Target = [u8]> + Send + Sync;
@@ -148,8 +160,9 @@ mod unix;
 
 #[cfg(unix)]
 use crate::unix::{
-    ClientCtx as ClientCtxImpl, PendingClientCtx as PendingClientCtxImpl,
-    PendingServerCtx as PendingServerCtxImpl, ServerCtx as ServerCtxImpl,
+    ClientCtx as ClientCtxImpl, Cred as CredImpl,
+    PendingClientCtx as PendingClientCtxImpl, PendingServerCtx as PendingServerCtxImpl,
+    ServerCtx as ServerCtxImpl
 };
 
 #[cfg(windows)]
@@ -164,6 +177,36 @@ use crate::windows::{
 pub enum Step<C, T> {
     Finished(C),
     Continue(T),
+}
+
+#[derive(Debug)]
+pub struct Cred(CredImpl);
+impl K5Cred for Cred {
+    fn server_acquire(flags: AcceptFlags, principal: Option<&str>) -> Result<Cred> {
+        CredImpl::server_acquire(flags, principal).map(Cred)
+    }
+    fn client_acquire(flags: InitiateFlags, principal: Option<&str>) -> Result<Cred> {
+        CredImpl::client_acquire(flags, principal).map(Cred)
+    }
+}
+impl From<CredImpl> for Cred {
+    fn from(cred: CredImpl) -> Self {
+        Cred(cred)
+    }
+}
+
+#[cfg(unix)]
+impl From<libgssapi::credential::Cred> for Cred {
+    fn from(value: libgssapi::credential::Cred) -> Self {
+        Cred(CredImpl::from(value))
+    }
+}
+
+#[cfg(unix)]
+impl Into<libgssapi::credential::Cred> for Cred {
+    fn into(self) -> libgssapi::credential::Cred {
+        self.0.into()
+    }
 }
 
 /// a partly initialized client context
@@ -233,6 +276,16 @@ impl ClientCtx {
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         let (pending, token) =
             ClientCtxImpl::new(flags, principal, target_principal, channel_bindings)?;
+        Ok((PendingClientCtx(pending), token))
+    }
+
+    pub fn new_with_cred(
+        cred: Cred,
+        target_principal: &str,
+        channel_bindings: Option<&[u8]>
+    ) -> Result<(PendingClientCtx, impl Deref<Target=[u8]>)> {
+        let (pending, token) =
+            ClientCtxImpl::new_with_cred(cred.0, target_principal, channel_bindings)?;
         Ok((PendingClientCtx(pending), token))
     }
 }
@@ -310,6 +363,10 @@ impl ServerCtx {
     /// client before it can be used.
     pub fn new(flags: AcceptFlags, principal: Option<&str>) -> Result<PendingServerCtx> {
         Ok(PendingServerCtx(ServerCtxImpl::new(flags, principal)?))
+    }
+
+    pub fn new_with_cred(cred: Cred) -> Result<PendingServerCtx> {
+        Ok(PendingServerCtx(ServerCtxImpl::new_with_cred(cred.0)?))
     }
 }
 

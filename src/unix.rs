@@ -1,4 +1,4 @@
-use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx, Step};
+use super::{AcceptFlags, InitiateFlags, K5Cred, K5Ctx, K5ServerCtx, Step};
 use anyhow::{anyhow, Error, Result};
 use bytes::BytesMut;
 use bytes::{self, buf::Chain, Buf as _};
@@ -8,7 +8,7 @@ use libgssapi::{
     context::{
         ClientCtx as GssClientCtx, CtxFlags, SecurityContext, ServerCtx as GssServerCtx,
     },
-    credential::{Cred, CredUsage},
+    credential::{Cred as GssCred, CredUsage},
     name::Name,
     oid::{OidSet, GSS_MECH_KRB5, GSS_NT_KRB5_PRINCIPAL},
     util::Buf,
@@ -93,6 +93,42 @@ fn unwrap_iov(
 }
 
 #[derive(Debug)]
+pub(crate) struct Cred(GssCred);
+impl Cred {
+    fn acquire(principal: Option<&str>, usage: CredUsage) -> Result<Cred> {
+        let name = principal
+            .map(|n| {
+                Name::new(n.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
+                    .canonicalize(Some(&GSS_MECH_KRB5))
+            })
+            .transpose()?;
+        let mut s = OidSet::new()?;
+        s.add(&GSS_MECH_KRB5)?;
+        Ok(GssCred::acquire(name.as_ref(), None, usage, Some(&s)).map(Cred::from)?)
+
+    }
+}
+impl K5Cred for Cred {
+    fn server_acquire(_flags: AcceptFlags, principal: Option<&str>) -> Result<Cred> {
+        Self::acquire(principal, CredUsage::Accept)
+    }
+    
+    fn client_acquire(_flags: InitiateFlags, principal: Option<&str>) -> Result<Cred> {
+        Self::acquire(principal, CredUsage::Initiate)
+    }
+}
+impl From<GssCred> for Cred {
+    fn from(cred: GssCred) -> Self {
+        Cred(cred)
+    }
+}
+impl Into<GssCred> for Cred {
+    fn into(self) -> GssCred {
+        self.0
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct PendingClientCtx(GssClientCtx);
 
 impl PendingClientCtx {
@@ -138,22 +174,24 @@ impl ClientCtx {
         target_principal: &str,
         channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let name = principal
-            .map(|n| {
-                Name::new(n.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
-                    .canonicalize(Some(&GSS_MECH_KRB5))
-            })
-            .transpose()?;
+        let cred = Cred::client_acquire(_flags, principal)?;
+        Self::new_with_cred(
+            cred,
+            target_principal,
+            channel_bindings,
+        )
+    }
+
+    pub(crate) fn new_with_cred(
+        cred: Cred,
+        target_principal: &str,
+        channel_bindings: Option<&[u8]>,
+    ) -> Result<(PendingClientCtx, impl Deref<Target=[u8]>)> {
         let target =
             Name::new(target_principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
                 .canonicalize(Some(&GSS_MECH_KRB5))?;
-        let cred = {
-            let mut s = OidSet::new()?;
-            s.add(&GSS_MECH_KRB5)?;
-            Cred::acquire(name.as_ref(), None, CredUsage::Initiate, Some(&s))?
-        };
         let mut gss = GssClientCtx::new(
-            Some(cred),
+            Some(cred.0),
             target,
             CtxFlags::GSS_C_MUTUAL_FLAG,
             Some(&GSS_MECH_KRB5),
@@ -244,18 +282,13 @@ impl ServerCtx {
         _flags: AcceptFlags,
         principal: Option<&str>,
     ) -> Result<PendingServerCtx> {
-        let name = principal
-            .map(|principal| -> Result<Name> {
-                Ok(Name::new(principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
-                    .canonicalize(Some(&GSS_MECH_KRB5))?)
-            })
-            .transpose()?;
-        let cred = {
-            let mut s = OidSet::new()?;
-            s.add(&GSS_MECH_KRB5)?;
-            Cred::acquire(name.as_ref(), None, CredUsage::Accept, Some(&s))?
-        };
-        Ok(PendingServerCtx(GssServerCtx::new(Some(cred))))
+        Self::new_with_cred(Cred::server_acquire(_flags, principal)?)
+    }
+
+    pub(crate) fn new_with_cred(
+        cred: Cred,
+    ) -> Result<PendingServerCtx> {
+        Ok(PendingServerCtx(GssServerCtx::new(Some(cred.0))))
     }
 }
 

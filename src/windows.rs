@@ -1,5 +1,5 @@
 use super::{AcceptFlags, InitiateFlags, K5Ctx, K5ServerCtx, Step};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Context};
 use bytes::{buf::Chain, Buf, BytesMut};
 use std::{
     default::Default,
@@ -84,6 +84,11 @@ impl Drop for Cred {
         unsafe {
             let _ = FreeCredentialsHandle(&mut self.0);
         }
+    }
+}
+impl From<SecHandle> for Cred {
+    fn from(handle: SecHandle) -> Self {
+        Cred(handle)
     }
 }
 
