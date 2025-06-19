@@ -87,11 +87,13 @@ impl Drop for Cred {
         }
     }
 }
+
 impl From<SecHandle> for Cred {
     fn from(handle: SecHandle) -> Self {
         Cred(handle)
     }
 }
+
 impl Into<SecHandle> for Cred {
     fn into(self) -> SecHandle {
         self.0
