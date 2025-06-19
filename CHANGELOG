@@ -1,4 +1,7 @@
-0.4.1: 
+0.4.2:
+- merge #13, adding the ability to inject custom credentials on both platforms
+
+0.4.1:
 - upgrade windows-rs to 0.58
 - upgrade libgssapi to 0.8.0
 
