@@ -94,6 +94,7 @@ extern crate bitflags;
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
 use std::{ops::Deref, time::Duration};
+#[cfg(windows)]
 use ::windows::Win32::Security::Credentials::SecHandle;
 
 pub trait K5Cred: Sized {
@@ -191,6 +192,7 @@ impl K5Cred for Cred {
         CredImpl::client_acquire(flags, principal).map(Cred)
     }
 }
+
 impl From<CredImpl> for Cred {
     fn from(cred: CredImpl) -> Self {
         Cred(cred)
