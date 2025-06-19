@@ -94,6 +94,7 @@ fn unwrap_iov(
 
 #[derive(Debug)]
 pub(crate) struct Cred(GssCred);
+
 impl Cred {
     fn acquire(principal: Option<&str>, usage: CredUsage) -> Result<Cred> {
         let name = principal
@@ -108,6 +109,7 @@ impl Cred {
 
     }
 }
+
 impl K5Cred for Cred {
     fn server_acquire(_flags: AcceptFlags, principal: Option<&str>) -> Result<Cred> {
         Self::acquire(principal, CredUsage::Accept)
@@ -117,11 +119,13 @@ impl K5Cred for Cred {
         Self::acquire(principal, CredUsage::Initiate)
     }
 }
+
 impl From<GssCred> for Cred {
     fn from(cred: GssCred) -> Self {
         Cred(cred)
     }
 }
+
 impl Into<GssCred> for Cred {
     fn into(self) -> GssCred {
         self.0
