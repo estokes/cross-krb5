@@ -184,6 +184,7 @@ pub enum Step<C, T> {
 
 #[derive(Debug)]
 pub struct Cred(CredImpl);
+
 impl K5Cred for Cred {
     fn server_acquire(flags: AcceptFlags, principal: Option<&str>) -> Result<Cred> {
         CredImpl::server_acquire(flags, principal).map(Cred)
