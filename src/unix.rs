@@ -99,12 +99,11 @@ impl Cred {
     fn acquire(principal: Option<&str>, usage: CredUsage) -> Result<Cred> {
         let name = principal
             .map(|n| {
-                Name::new(n.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
-                    .canonicalize(Some(&GSS_MECH_KRB5))
+                Name::new(n.as_bytes(), Some(GSS_NT_KRB5_PRINCIPAL))?
+                    .canonicalize(Some(GSS_MECH_KRB5))
             })
             .transpose()?;
-        let mut s = OidSet::new()?;
-        s.add(&GSS_MECH_KRB5)?;
+        let s = OidSet::singleton(GSS_MECH_KRB5)?;
         Ok(GssCred::acquire(name.as_ref(), None, usage, Some(&s)).map(Cred::from)?)
 
     }
@@ -192,13 +191,13 @@ impl ClientCtx {
         channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target=[u8]>)> {
         let target =
-            Name::new(target_principal.as_bytes(), Some(&GSS_NT_KRB5_PRINCIPAL))?
-                .canonicalize(Some(&GSS_MECH_KRB5))?;
+            Name::new(target_principal.as_bytes(), Some(GSS_NT_KRB5_PRINCIPAL))?
+                .canonicalize(Some(GSS_MECH_KRB5))?;
         let mut gss = GssClientCtx::new(
             Some(cred.0),
             target,
             CtxFlags::GSS_C_MUTUAL_FLAG,
-            Some(&GSS_MECH_KRB5),
+            Some(GSS_MECH_KRB5),
         );
         let token =
             gss.step(None, channel_bindings)?.ok_or_else(|| anyhow!("expected token"))?;

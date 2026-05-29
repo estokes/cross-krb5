@@ -1,3 +1,13 @@
+0.5.0:
+- upgrade libgssapi to 0.10.0, which carries several soundness fixes.
+  Notably libgssapi dropped Sync from its client and server contexts,
+  since gssapi (and equally sspi) forbid concurrent use of a single
+  context. ClientCtx and ServerCtx are now Send but no longer Sync on
+  every platform; on windows, where the contexts would otherwise be
+  auto-Sync, this is enforced explicitly to keep the API uniform. Share
+  a context behind a Mutex if you need it on multiple threads. This is a
+  semver visible change, hence the minor version bump.
+
 0.4.2:
 - merge #13, adding the ability to inject custom credentials on both platforms
 

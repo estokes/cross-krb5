@@ -2,9 +2,11 @@ use super::{AcceptFlags, InitiateFlags, K5Cred, K5Ctx, K5ServerCtx, Step};
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::{buf::Chain, Buf, BytesMut};
 use std::{
+    cell::Cell,
     default::Default,
     ffi::{c_void, OsString},
     fmt, mem,
+    marker::PhantomData,
     ops::{Deref, Drop},
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
@@ -301,6 +303,13 @@ impl PendingClientCtx {
     }
 }
 
+// An SSPI security context must not be used concurrently from multiple
+// threads. Unlike unix, where SecHandle's analogue is a raw pointer that
+// is already !Sync, SecHandle is a pair of integers and so the contexts
+// would otherwise be auto-Sync. This marker removes Sync while retaining
+// Send, keeping the cross platform API uniform (see CHANGELOG 0.5.0).
+type NotSync = PhantomData<Cell<()>>;
+
 pub struct ClientCtx {
     ctx: SecHandle,
     cred: Cred,
@@ -312,6 +321,7 @@ pub struct ClientCtx {
     sizes: SecPkgContext_Sizes,
     header: BytesMut,
     padding: BytesMut,
+    not_sync: NotSync,
 }
 
 impl Drop for ClientCtx {
@@ -364,6 +374,7 @@ impl ClientCtx {
             sizes: SecPkgContext_Sizes::default(),
             header: BytesMut::new(),
             padding: BytesMut::new(),
+            not_sync: PhantomData,
         };
         let token = ctx
             .do_step(InputData::Initial(cb_token))?
@@ -534,6 +545,7 @@ pub struct ServerCtx {
     sizes: SecPkgContext_Sizes,
     header: BytesMut,
     padding: BytesMut,
+    not_sync: NotSync,
 }
 
 impl Drop for ServerCtx {
@@ -573,6 +585,7 @@ impl ServerCtx {
             sizes: SecPkgContext_Sizes::default(),
             header: BytesMut::new(),
             padding: BytesMut::new(),
+            not_sync: PhantomData,
         }))
     }
 
