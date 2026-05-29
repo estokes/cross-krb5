@@ -26,7 +26,8 @@ use windows::{
                 QuerySecurityPackageInfoW, SecBuffer, SecBufferDesc,
                 SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
                 SecPkgCredentials_NamesW, ASC_REQ_CONFIDENTIALITY, ASC_REQ_MUTUAL_AUTH,
-                ISC_REQ_CONFIDENTIALITY, ISC_REQ_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
+                ISC_REQ_CONFIDENTIALITY, ISC_REQ_MUTUAL_AUTH, ISC_RET_CONFIDENTIALITY,
+                ISC_RET_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
                 SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_DATA, SECBUFFER_PADDING,
                 SECBUFFER_STREAM, SECBUFFER_TOKEN, SECBUFFER_VERSION,
                 SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES, SECPKG_CRED_ATTR_NAMES,
@@ -98,16 +99,24 @@ impl From<SecHandle> for Cred {
 
 impl Into<SecHandle> for Cred {
     fn into(self) -> SecHandle {
-        self.0
+        // SecHandle is Copy, so returning self.0 alone would leave `self` to
+        // drop and run FreeCredentialsHandle on the handle we just handed out.
+        // Forget self so the caller takes ownership of a live handle.
+        let handle = self.0;
+        mem::forget(self);
+        handle
     }
 }
 
 impl Cred {
     fn acquire(negotiate: bool, principal: Option<&str>, server: bool) -> Result<Cred> {
         let mut cred = SecHandle::default();
-        let principal = principal.map(str_to_wstr);
+        // `principal` must stay live until after AcquireCredentialsHandleW: the
+        // pointer below borrows into its buffer. Binding it here (rather than
+        // moving the Vec into a `.map` closure) keeps it alive for the call.
+        let mut principal = principal.map(str_to_wstr);
         let principal_ptr =
-            principal.map(|mut p| p.as_mut_ptr()).unwrap_or(ptr::null_mut());
+            principal.as_mut().map(|p| p.as_mut_ptr()).unwrap_or(ptr::null_mut());
         let package = str_to_wstr(if negotiate { "Negotiate" } else { "Kerberos" });
         let dir = if server { SECPKG_CRED_INBOUND } else { SECPKG_CRED_OUTBOUND };
         let mut lifetime = 0i64;
@@ -238,6 +247,9 @@ fn wrap(
 }
 
 fn unwrap_iov(ctx: &mut SecHandle, len: usize, msg: &mut BytesMut) -> Result<BytesMut> {
+    if len > msg.len() {
+        bail!("unwrap_iov: len {} exceeds buffer length {}", len, msg.len());
+    }
     let mut bufs = [
         SecBuffer {
             BufferType: SECBUFFER_STREAM,
@@ -256,11 +268,17 @@ fn unwrap_iov(ctx: &mut SecHandle, len: usize, msg: &mut BytesMut) -> Result<Byt
     if failed(res.0) {
         bail!("decrypt message failed {}", format_error(res.0))
     }
-    let hdr_len = bufs[1].pvBuffer as usize - bufs[0].pvBuffer as usize;
+    let hdr_len = (bufs[1].pvBuffer as usize)
+        .checked_sub(bufs[0].pvBuffer as usize)
+        .ok_or_else(|| anyhow!("unwrap_iov: data buffer precedes the stream start"))?;
     let data_len = bufs[1].cbBuffer as usize;
+    let pad_len = len
+        .checked_sub(hdr_len)
+        .and_then(|rest| rest.checked_sub(data_len))
+        .ok_or_else(|| anyhow!("unwrap_iov: header + data exceed message length"))?;
     msg.advance(hdr_len);
     let data = msg.split_to(data_len);
-    msg.advance(len - hdr_len - data_len); // padding
+    msg.advance(pad_len); // padding
     Ok(data)
 }
 
@@ -277,7 +295,8 @@ fn convert_lifetime(expires: i64) -> Result<Duration> {
         if expires as u64 <= now {
             Ok(Duration::from_secs(0))
         } else {
-            Ok(Duration::from_secs((expires as u64 - now) / 10))
+            // FILETIME deltas are in 100ns units, so seconds = ticks / 1e7.
+            Ok(Duration::from_secs((expires as u64 - now) / 10_000_000))
         }
     }
 }
@@ -468,6 +487,14 @@ impl ClientCtx {
             bail!("ClientCtx::step failed {}", format_error(res.0))
         }
         if res == SEC_E_OK {
+            // We unconditionally request mutual auth and confidentiality; per
+            // RFC 2743 the initiator must confirm they were actually granted.
+            if self.attrs & ISC_RET_MUTUAL_AUTH == 0 {
+                bail!("mutual authentication was requested but not established");
+            }
+            if self.attrs & ISC_RET_CONFIDENTIALITY == 0 {
+                bail!("confidentiality was requested but not established");
+            }
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
             self.done = true;
         }

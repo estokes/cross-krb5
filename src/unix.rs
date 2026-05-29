@@ -1,5 +1,5 @@
 use super::{AcceptFlags, InitiateFlags, K5Cred, K5Ctx, K5ServerCtx, Step};
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use bytes::BytesMut;
 use bytes::{self, buf::Chain, Buf as _};
 #[cfg(feature = "iov")]
@@ -63,19 +63,28 @@ fn unwrap_iov(
     len: usize,
     msg: &mut BytesMut,
 ) -> Result<BytesMut> {
+    if len > msg.len() {
+        bail!("unwrap_iov: len {} exceeds buffer length {}", len, msg.len());
+    }
     let (hdr_len, data_len) = {
         let mut iov = [
             GssIov::new(GssIovType::Stream, &mut msg[0..len]),
             GssIov::new(GssIovType::Data, &mut []),
         ];
         ctx.unwrap_iov(&mut iov[..])?;
-        let hdr_len = iov[0].header_length(&iov[1]).unwrap();
+        let hdr_len = iov[0]
+            .header_length(&iov[1])
+            .ok_or_else(|| anyhow!("unwrap_iov: data buffer is not within the stream"))?;
         let data_len = iov[1].len();
         (hdr_len, data_len)
     };
+    let pad_len = len
+        .checked_sub(hdr_len)
+        .and_then(|rest| rest.checked_sub(data_len))
+        .ok_or_else(|| anyhow!("unwrap_iov: header + data exceed message length"))?;
     msg.advance(hdr_len);
     let data = msg.split_to(data_len);
-    msg.advance(len - hdr_len - data_len);
+    msg.advance(pad_len);
     Ok(data) // return the decrypted contents
 }
 
@@ -85,6 +94,9 @@ fn unwrap_iov(
     len: usize,
     msg: &mut BytesMut,
 ) -> Result<BytesMut> {
+    if len > msg.len() {
+        bail!("unwrap_iov: len {} exceeds buffer length {}", len, msg.len());
+    }
     let mut msg = msg.split_to(len);
     let decrypted = ctx.unwrap(&*msg)?;
     msg.clear();
@@ -152,7 +164,19 @@ impl PendingClientCtx {
                 trailer: BytesMut::new(),
             }
         }
-        Ok(match self.0.step(Some(token), None)? {
+        let tok = self.0.step(Some(token), None)?;
+        if self.0.is_complete() {
+            // We unconditionally request mutual auth and confidentiality; per
+            // RFC 2743 the initiator must confirm they were actually granted.
+            let granted = self.0.flags()?;
+            if !granted.contains(CtxFlags::GSS_C_MUTUAL_FLAG) {
+                bail!("mutual authentication was requested but not established");
+            }
+            if !granted.contains(CtxFlags::GSS_C_CONF_FLAG) {
+                bail!("confidentiality was requested but not established");
+            }
+        }
+        Ok(match tok {
             None => Step::Finished((cc(self.0), None)),
             Some(tok) if self.0.is_complete() => {
                 Step::Finished((cc(self.0), Some(tok)))
@@ -196,7 +220,9 @@ impl ClientCtx {
         let mut gss = GssClientCtx::new(
             Some(cred.0),
             target,
-            CtxFlags::GSS_C_MUTUAL_FLAG,
+            CtxFlags::GSS_C_MUTUAL_FLAG
+                | CtxFlags::GSS_C_CONF_FLAG
+                | CtxFlags::GSS_C_INTEG_FLAG,
             Some(GSS_MECH_KRB5),
         );
         let token =
