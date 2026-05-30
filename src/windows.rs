@@ -5,8 +5,9 @@ use std::{
     cell::Cell,
     default::Default,
     ffi::{c_void, OsString},
-    fmt, mem,
+    fmt,
     marker::PhantomData,
+    mem,
     ops::{Deref, Drop},
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
@@ -28,17 +29,15 @@ use windows::{
                 QueryContextAttributesW, QueryCredentialsAttributesW,
                 QuerySecurityPackageInfoW, SecBuffer, SecBufferDesc,
                 SecPkgContext_NativeNamesW, SecPkgContext_NegotiationInfoW,
-                SecPkgContext_Sizes,
-                SecPkgCredentials_NamesW, ASC_REQ_CONFIDENTIALITY, ASC_REQ_FLAGS,
-                ASC_REQ_MUTUAL_AUTH, ASC_RET_CONFIDENTIALITY, ASC_RET_MUTUAL_AUTH,
-                ISC_REQ_CONFIDENTIALITY, ISC_REQ_FLAGS, ISC_REQ_MUTUAL_AUTH,
-                ISC_RET_CONFIDENTIALITY, ISC_RET_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
-                SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_DATA, SECBUFFER_PADDING,
-                SECBUFFER_STREAM, SECBUFFER_TOKEN, SECBUFFER_VERSION,
+                SecPkgContext_Sizes, SecPkgCredentials_NamesW, ASC_REQ_CONFIDENTIALITY,
+                ASC_REQ_FLAGS, ASC_REQ_MUTUAL_AUTH, ASC_RET_CONFIDENTIALITY,
+                ASC_RET_MUTUAL_AUTH, ISC_REQ_CONFIDENTIALITY, ISC_REQ_FLAGS,
+                ISC_REQ_MUTUAL_AUTH, ISC_RET_CONFIDENTIALITY, ISC_RET_MUTUAL_AUTH,
+                KERB_WRAP_NO_ENCRYPT, SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_DATA,
+                SECBUFFER_PADDING, SECBUFFER_STREAM, SECBUFFER_TOKEN, SECBUFFER_VERSION,
                 SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_NEGOTIATION_INFO,
-                SECPKG_ATTR_SIZES, SECPKG_CRED_ATTR_NAMES,
-                SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP,
-                SEC_CHANNEL_BINDINGS,
+                SECPKG_ATTR_SIZES, SECPKG_CRED_ATTR_NAMES, SECPKG_CRED_INBOUND,
+                SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP, SEC_CHANNEL_BINDINGS,
             },
             Credentials::SecHandle,
         },
@@ -144,9 +143,6 @@ impl Into<SecHandle> for Cred {
 impl Cred {
     fn acquire(negotiate: bool, principal: Option<&str>, server: bool) -> Result<Cred> {
         let mut cred = SecHandle::default();
-        // `principal` must stay live until after AcquireCredentialsHandleW: the
-        // pointer below borrows into its buffer. Binding it here (rather than
-        // moving the Vec into a `.map` closure) keeps it alive for the call.
         let mut principal = principal.map(str_to_wstr);
         let principal_ptr =
             principal.as_mut().map(|p| p.as_mut_ptr()).unwrap_or(ptr::null_mut());
@@ -185,11 +181,17 @@ impl Cred {
 }
 
 impl K5Cred for Cred {
-    fn server_acquire(flags: AcceptFlags, principal: Option<&str>) -> anyhow::Result<Self> {
+    fn server_acquire(
+        flags: AcceptFlags,
+        principal: Option<&str>,
+    ) -> anyhow::Result<Self> {
         Self::acquire(flags.contains(AcceptFlags::NEGOTIATE_TOKEN), principal, true)
     }
 
-    fn client_acquire(flags: InitiateFlags, principal: Option<&str>) -> anyhow::Result<Self> {
+    fn client_acquire(
+        flags: InitiateFlags,
+        principal: Option<&str>,
+    ) -> anyhow::Result<Self> {
         Self::acquire(flags.contains(InitiateFlags::NEGOTIATE_TOKEN), principal, false)
     }
 }
@@ -592,12 +594,18 @@ impl K5Ctx for ClientCtx {
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
-        ensure_conf(!self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY), encrypt)?;
+        ensure_conf(
+            !self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY),
+            encrypt,
+        )?;
         wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
-        ensure_conf(!self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY), encrypt)?;
+        ensure_conf(
+            !self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY),
+            encrypt,
+        )?;
         wrap_iov(
             &mut self.ctx,
             &mut self.sizes,
