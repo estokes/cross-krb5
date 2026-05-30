@@ -865,7 +865,17 @@ impl K5ServerCtx for ServerCtx {
                 &mut names as *mut _ as *mut c_void,
             )
             .context("looking up client names")?;
-            Ok(string_from_wstr(names.sClientName))
+            let client = string_from_wstr(names.sClientName);
+            // sClientName and sServerName are variable-sized members the SSP
+            // allocates; per the QueryContextAttributes contract the caller
+            // must release them with FreeContextBuffer or they leak.
+            if !names.sClientName.is_null() {
+                let _ = FreeContextBuffer(names.sClientName as *mut c_void);
+            }
+            if !names.sServerName.is_null() {
+                let _ = FreeContextBuffer(names.sServerName as *mut c_void);
+            }
+            Ok(client)
         }
     }
 }

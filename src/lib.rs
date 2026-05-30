@@ -154,6 +154,14 @@ pub trait K5Ctx {
 pub trait K5ServerCtx: K5Ctx {
     /// Return the user principal name of the client context
     /// associated with this server context.
+    ///
+    /// The name is the cryptographically authenticated client identity
+    /// (it can only be read once the context is established). The exact
+    /// string format is *not* guaranteed to be byte-identical across
+    /// platforms: on Unix it is the gssapi display name, while on Windows
+    /// it is the principal name (CNAME) from the Kerberos ticket as
+    /// formatted by SSPI. Both are typically `user@REALM`, but do not rely
+    /// on exact equality (e.g. realm casing) when comparing across OSes.
     fn client(&mut self) -> Result<String>;
 }
 
