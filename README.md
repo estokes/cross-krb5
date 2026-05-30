@@ -21,7 +21,7 @@ enum Msg {
 }
 
 fn server(spn: String, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
-    let mut server = ServerCtx::new(AcceptFlags::empty(), Some(&spn)).expect("new");
+    let mut server = ServerCtx::new(AcceptFlags::empty(), Some(&spn), None).expect("new");
     let mut server = loop {
         let token = match input.recv().expect("expected data") {
             Msg::Msg(_) => panic!("server not finished initializing"),

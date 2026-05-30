@@ -15,6 +15,26 @@ use libgssapi::{
 };
 use std::{ops::Deref, time::Duration};
 
+// Per RFC 2743 a requested context property is only a hint; the peer must
+// confirm the mechanism actually granted it. We require a property unless the
+// caller disabled it via the corresponding flag.
+fn verify_granted(granted: CtxFlags, mutual: bool, confidential: bool) -> Result<()> {
+    if mutual && !granted.contains(CtxFlags::GSS_C_MUTUAL_FLAG) {
+        bail!("mutual authentication was required but not established");
+    }
+    if confidential && !granted.contains(CtxFlags::GSS_C_CONF_FLAG) {
+        bail!("confidentiality was required but not established");
+    }
+    Ok(())
+}
+
+fn ensure_conf(confidential: bool, encrypt: bool) -> Result<()> {
+    if encrypt && !confidential {
+        bail!("encryption requested but the CONFIDENTIAL flag was not set");
+    }
+    Ok(())
+}
+
 #[cfg(feature = "iov")]
 fn wrap_iov(
     ctx: &mut impl SecurityContext,
@@ -144,7 +164,10 @@ impl Into<GssCred> for Cred {
 }
 
 #[derive(Debug)]
-pub(crate) struct PendingClientCtx(GssClientCtx);
+pub(crate) struct PendingClientCtx {
+    gss: GssClientCtx,
+    flags: InitiateFlags,
+}
 
 impl PendingClientCtx {
     pub(crate) fn step(
@@ -156,30 +179,28 @@ impl PendingClientCtx {
             (PendingClientCtx, impl Deref<Target = [u8]>),
         >,
     > {
-        fn cc(gss: GssClientCtx) -> ClientCtx {
+        fn cc(gss: GssClientCtx, confidential: bool) -> ClientCtx {
             ClientCtx {
                 gss,
+                confidential,
                 header: BytesMut::new(),
                 padding: BytesMut::new(),
                 trailer: BytesMut::new(),
             }
         }
-        let tok = self.0.step(Some(token), None)?;
-        if self.0.is_complete() {
-            // We unconditionally request mutual auth and confidentiality; per
-            // RFC 2743 the initiator must confirm they were actually granted.
-            let granted = self.0.flags()?;
-            if !granted.contains(CtxFlags::GSS_C_MUTUAL_FLAG) {
-                bail!("mutual authentication was requested but not established");
-            }
-            if !granted.contains(CtxFlags::GSS_C_CONF_FLAG) {
-                bail!("confidentiality was requested but not established");
-            }
+        let confidential = !self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY);
+        let tok = self.gss.step(Some(token), None)?;
+        if self.gss.is_complete() {
+            verify_granted(
+                self.gss.flags()?,
+                !self.flags.contains(InitiateFlags::DISABLE_MUTUAL_AUTH),
+                confidential,
+            )?;
         }
         Ok(match tok {
-            None => Step::Finished((cc(self.0), None)),
-            Some(tok) if self.0.is_complete() => {
-                Step::Finished((cc(self.0), Some(tok)))
+            None => Step::Finished((cc(self.gss, confidential), None)),
+            Some(tok) if self.gss.is_complete() => {
+                Step::Finished((cc(self.gss, confidential), Some(tok)))
             }
             Some(tok) => Step::Continue((self, tok)),
         })
@@ -189,6 +210,7 @@ impl PendingClientCtx {
 #[derive(Debug)]
 pub struct ClientCtx {
     gss: GssClientCtx,
+    confidential: bool,
     header: BytesMut,
     padding: BytesMut,
     trailer: BytesMut,
@@ -196,13 +218,14 @@ pub struct ClientCtx {
 
 impl ClientCtx {
     pub(crate) fn new(
-        _flags: InitiateFlags,
+        flags: InitiateFlags,
         principal: Option<&str>,
         target_principal: &str,
         channel_bindings: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
-        let cred = Cred::client_acquire(_flags, principal)?;
+        let cred = Cred::client_acquire(flags, principal)?;
         Self::new_with_cred(
+            flags,
             cred,
             target_principal,
             channel_bindings,
@@ -210,6 +233,7 @@ impl ClientCtx {
     }
 
     pub(crate) fn new_with_cred(
+        flags: InitiateFlags,
         cred: Cred,
         target_principal: &str,
         channel_bindings: Option<&[u8]>,
@@ -217,17 +241,19 @@ impl ClientCtx {
         let target =
             Name::new(target_principal.as_bytes(), Some(GSS_NT_KRB5_PRINCIPAL))?
                 .canonicalize(Some(GSS_MECH_KRB5))?;
-        let mut gss = GssClientCtx::new(
-            Some(cred.0),
-            target,
-            CtxFlags::GSS_C_MUTUAL_FLAG
-                | CtxFlags::GSS_C_CONF_FLAG
-                | CtxFlags::GSS_C_INTEG_FLAG,
-            Some(GSS_MECH_KRB5),
-        );
+        // Integrity is fundamental to wrap/unwrap and always requested; mutual
+        // auth and confidentiality are requested unless the caller disabled them.
+        let mut req = CtxFlags::GSS_C_INTEG_FLAG;
+        if !flags.contains(InitiateFlags::DISABLE_MUTUAL_AUTH) {
+            req |= CtxFlags::GSS_C_MUTUAL_FLAG;
+        }
+        if !flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY) {
+            req |= CtxFlags::GSS_C_CONF_FLAG;
+        }
+        let mut gss = GssClientCtx::new(Some(cred.0), target, req, Some(GSS_MECH_KRB5));
         let token =
             gss.step(None, channel_bindings)?.ok_or_else(|| anyhow!("expected token"))?;
-        Ok((PendingClientCtx(gss), token))
+        Ok((PendingClientCtx { gss, flags }, token))
     }
 }
 
@@ -236,10 +262,12 @@ impl K5Ctx for ClientCtx {
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, Chain<BytesMut, BytesMut>>>;
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
+        ensure_conf(self.confidential, encrypt)?;
         self.gss.wrap(encrypt, msg).map_err(|e| Error::from(e))
     }
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        ensure_conf(self.confidential, encrypt)?;
         wrap_iov(
             &mut self.gss,
             encrypt,
@@ -268,7 +296,13 @@ impl K5Ctx for ClientCtx {
 }
 
 #[derive(Debug)]
-pub(crate) struct PendingServerCtx(GssServerCtx);
+pub(crate) struct PendingServerCtx {
+    gss: GssServerCtx,
+    flags: AcceptFlags,
+    // owned because the acceptor may take several steps and the bindings
+    // must outlive each gss_accept_sec_context call
+    cb: Option<Vec<u8>>,
+}
 
 impl PendingServerCtx {
     pub(crate) fn step(
@@ -280,18 +314,28 @@ impl PendingServerCtx {
             (PendingServerCtx, impl Deref<Target = [u8]>),
         >,
     > {
-        fn cc(gss: GssServerCtx) -> ServerCtx {
+        fn cc(gss: GssServerCtx, confidential: bool) -> ServerCtx {
             ServerCtx {
                 gss,
+                confidential,
                 header: BytesMut::new(),
                 padding: BytesMut::new(),
                 trailer: BytesMut::new(),
             }
         }
-        Ok(match self.0.step(token)? {
-            None => Step::Finished((cc(self.0), None)),
-            Some(tok) if self.0.is_complete() => {
-                Step::Finished((cc(self.0), Some(tok)))
+        let confidential = !self.flags.contains(AcceptFlags::DISABLE_CONFIDENTIALITY);
+        let tok = self.gss.step(token, self.cb.as_deref())?;
+        if self.gss.is_complete() {
+            verify_granted(
+                self.gss.flags()?,
+                !self.flags.contains(AcceptFlags::DISABLE_MUTUAL_AUTH),
+                confidential,
+            )?;
+        }
+        Ok(match tok {
+            None => Step::Finished((cc(self.gss, confidential), None)),
+            Some(tok) if self.gss.is_complete() => {
+                Step::Finished((cc(self.gss, confidential), Some(tok)))
             }
             Some(tok) => Step::Continue((self, tok)),
         })
@@ -301,6 +345,7 @@ impl PendingServerCtx {
 #[derive(Debug)]
 pub struct ServerCtx {
     gss: GssServerCtx,
+    confidential: bool,
     header: BytesMut,
     padding: BytesMut,
     trailer: BytesMut,
@@ -308,16 +353,23 @@ pub struct ServerCtx {
 
 impl ServerCtx {
     pub(crate) fn new(
-        _flags: AcceptFlags,
+        flags: AcceptFlags,
         principal: Option<&str>,
+        channel_bindings: Option<&[u8]>,
     ) -> Result<PendingServerCtx> {
-        Self::new_with_cred(Cred::server_acquire(_flags, principal)?)
+        Self::new_with_cred(flags, Cred::server_acquire(flags, principal)?, channel_bindings)
     }
 
     pub(crate) fn new_with_cred(
+        flags: AcceptFlags,
         cred: Cred,
+        channel_bindings: Option<&[u8]>,
     ) -> Result<PendingServerCtx> {
-        Ok(PendingServerCtx(GssServerCtx::new(Some(cred.0))))
+        Ok(PendingServerCtx {
+            gss: GssServerCtx::new(Some(cred.0)),
+            flags,
+            cb: channel_bindings.map(|cb| cb.to_vec()),
+        })
     }
 }
 
@@ -326,10 +378,12 @@ impl K5Ctx for ServerCtx {
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, Chain<BytesMut, BytesMut>>>;
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Self::Buffer> {
+        ensure_conf(self.confidential, encrypt)?;
         self.gss.wrap(encrypt, msg).map_err(|e| Error::from(e))
     }
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        ensure_conf(self.confidential, encrypt)?;
         wrap_iov(
             &mut self.gss,
             encrypt,

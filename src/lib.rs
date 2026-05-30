@@ -21,7 +21,7 @@
 //! }
 //!
 //! fn server(spn: String, input: mpsc::Receiver<Msg>, output: mpsc::Sender<Msg>) {
-//!     let mut server = ServerCtx::new(AcceptFlags::empty(), Some(&spn)).expect("new");
+//!     let mut server = ServerCtx::new(AcceptFlags::empty(), Some(&spn), None).expect("new");
 //!     let mut server = loop {
 //!         let token = match input.recv().expect("expected data") {
 //!             Msg::Msg(_) => panic!("server not finished initializing"),
@@ -215,9 +215,20 @@ impl Into<libgssapi::credential::Cred> for Cred {
 }
 
 #[cfg(windows)]
-impl From<SecHandle> for Cred {
-    fn from(value: SecHandle) -> Self {
-        Cred(CredImpl::from(value))
+impl Cred {
+    /// Wrap a raw SSPI credential handle, taking ownership of it.
+    ///
+    /// # Safety
+    ///
+    /// `handle` must be a live credential handle obtained from SSPI (e.g.
+    /// from `AcquireCredentialsHandle`) whose ownership is being transferred
+    /// to the returned `Cred`; dropping the `Cred` calls
+    /// `FreeCredentialsHandle` on it. The handle must not be used or freed
+    /// elsewhere. Passing a fabricated, borrowed, or already-freed handle is
+    /// undefined behavior. This mirrors libgssapi's `Cred::from_c`, which is
+    /// likewise unsafe for the same reason.
+    pub unsafe fn from_raw(handle: SecHandle) -> Cred {
+        Cred(CredImpl::from(handle))
     }
 }
 
@@ -259,11 +270,31 @@ impl PendingClientCtx {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct InitiateFlags: u32 {
         /// Windows only, use the sspi negotiate package instead of
         /// the Kerberos package. Some Windows servers expect these
         /// tokens instead of normal gssapi compatible tokens.
         const NEGOTIATE_TOKEN = 0x1;
+        /// Opt out of mutual authentication. By default the client
+        /// requests mutual authentication and context establishment
+        /// fails unless the mechanism actually grants it; set this flag
+        /// to neither request nor require it.
+        const DISABLE_MUTUAL_AUTH = 0x2;
+        /// Opt out of confidentiality. By default the client requests
+        /// confidentiality, requires that it was granted, and permits
+        /// `wrap`/`wrap_iov` with `encrypt = true`. Set this flag to
+        /// neither request nor require it; `wrap`/`wrap_iov` with
+        /// `encrypt = true` then fail (the channel is integrity-only).
+        const DISABLE_CONFIDENTIALITY = 0x4;
+    }
+}
+
+impl Default for InitiateFlags {
+    /// The secure default: nothing is disabled, so both mutual
+    /// authentication and confidentiality are required.
+    fn default() -> Self {
+        InitiateFlags::empty()
     }
 }
 
@@ -299,12 +330,13 @@ impl ClientCtx {
     }
 
     pub fn new_with_cred(
+        flags: InitiateFlags,
         cred: Cred,
         target_principal: &str,
         channel_bindings: Option<&[u8]>
     ) -> Result<(PendingClientCtx, impl Deref<Target=[u8]>)> {
         let (pending, token) =
-            ClientCtxImpl::new_with_cred(cred.0, target_principal, channel_bindings)?;
+            ClientCtxImpl::new_with_cred(flags, cred.0, target_principal, channel_bindings)?;
         Ok((PendingClientCtx(pending), token))
     }
 }
@@ -335,6 +367,7 @@ impl K5Ctx for ClientCtx {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct AcceptFlags: u32 {
         /// Windows only, use the sspi negotiate package instead of
         /// the Kerberos package. Some Windows clients generate these
@@ -343,6 +376,23 @@ bitflags! {
         /// this if you know the client will be on windows sending
         /// negotiate tokens.
         const NEGOTIATE_TOKEN = 0x1;
+        /// Opt out of requiring mutual authentication. By default
+        /// accepting a context that did not establish mutual
+        /// authentication fails; set this flag to not require it.
+        const DISABLE_MUTUAL_AUTH = 0x2;
+        /// Opt out of confidentiality. By default the acceptor requires
+        /// that confidentiality was granted and permits `wrap`/`wrap_iov`
+        /// with `encrypt = true`. Set this flag to not require it;
+        /// `wrap`/`wrap_iov` with `encrypt = true` then fail.
+        const DISABLE_CONFIDENTIALITY = 0x4;
+    }
+}
+
+impl Default for AcceptFlags {
+    /// The secure default: nothing is disabled, so both mutual
+    /// authentication and confidentiality are required.
+    fn default() -> Self {
+        AcceptFlags::empty()
     }
 }
 
@@ -380,12 +430,30 @@ impl ServerCtx {
     /// user running the current process. The returned pending context
     /// must be initiaized by exchanging one or more tokens with the
     /// client before it can be used.
-    pub fn new(flags: AcceptFlags, principal: Option<&str>) -> Result<PendingServerCtx> {
-        Ok(PendingServerCtx(ServerCtxImpl::new(flags, principal)?))
+    ///
+    /// If present, `channel_bindings` must match the bindings the client
+    /// supplied to `ClientCtx::new`; the mechanism rejects the context
+    /// otherwise. Note that with a `None` acceptor binding the mechanism
+    /// generally accepts whatever the client sent, so to actually enforce
+    /// channel binding the server must pass its own expected bindings here.
+    pub fn new(
+        flags: AcceptFlags,
+        principal: Option<&str>,
+        channel_bindings: Option<&[u8]>,
+    ) -> Result<PendingServerCtx> {
+        Ok(PendingServerCtx(ServerCtxImpl::new(flags, principal, channel_bindings)?))
     }
 
-    pub fn new_with_cred(cred: Cred) -> Result<PendingServerCtx> {
-        Ok(PendingServerCtx(ServerCtxImpl::new_with_cred(cred.0)?))
+    pub fn new_with_cred(
+        flags: AcceptFlags,
+        cred: Cred,
+        channel_bindings: Option<&[u8]>,
+    ) -> Result<PendingServerCtx> {
+        Ok(PendingServerCtx(ServerCtxImpl::new_with_cred(
+            flags,
+            cred.0,
+            channel_bindings,
+        )?))
     }
 }
 
@@ -417,5 +485,24 @@ impl K5Ctx for ServerCtx {
 impl K5ServerCtx for ServerCtx {
     fn client(&mut self) -> Result<String> {
         K5ServerCtx::client(&mut self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The flags are opt-out: the empty/default set must never disable a
+    // security property, so the easiest-to-write call is the secure one.
+    #[test]
+    fn secure_by_default() {
+        for f in [InitiateFlags::empty(), InitiateFlags::default()] {
+            assert!(!f.contains(InitiateFlags::DISABLE_MUTUAL_AUTH));
+            assert!(!f.contains(InitiateFlags::DISABLE_CONFIDENTIALITY));
+        }
+        for f in [AcceptFlags::empty(), AcceptFlags::default()] {
+            assert!(!f.contains(AcceptFlags::DISABLE_MUTUAL_AUTH));
+            assert!(!f.contains(AcceptFlags::DISABLE_CONFIDENTIALITY));
+        }
     }
 }

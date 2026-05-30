@@ -15,22 +15,28 @@ use std::{
 use windows::{
     core::{PCWSTR, PWSTR},
     Win32::{
-        Foundation::{FILETIME, SEC_E_OK, SYSTEMTIME},
+        Foundation::{
+            FILETIME, SEC_E_OK, SEC_I_COMPLETE_AND_CONTINUE, SEC_I_COMPLETE_NEEDED,
+            SYSTEMTIME,
+        },
         Globalization::lstrlenW,
         Security::{
             Authentication::Identity::{
-                AcceptSecurityContext, AcquireCredentialsHandleW, DecryptMessage,
-                DeleteSecurityContext, EncryptMessage, FreeContextBuffer,
+                AcceptSecurityContext, AcquireCredentialsHandleW, CompleteAuthToken,
+                DecryptMessage, DeleteSecurityContext, EncryptMessage, FreeContextBuffer,
                 FreeCredentialsHandle, InitializeSecurityContextW,
                 QueryContextAttributesW, QueryCredentialsAttributesW,
                 QuerySecurityPackageInfoW, SecBuffer, SecBufferDesc,
-                SecPkgContext_NativeNamesW, SecPkgContext_Sizes,
-                SecPkgCredentials_NamesW, ASC_REQ_CONFIDENTIALITY, ASC_REQ_MUTUAL_AUTH,
-                ISC_REQ_CONFIDENTIALITY, ISC_REQ_MUTUAL_AUTH, ISC_RET_CONFIDENTIALITY,
-                ISC_RET_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
+                SecPkgContext_NativeNamesW, SecPkgContext_NegotiationInfoW,
+                SecPkgContext_Sizes,
+                SecPkgCredentials_NamesW, ASC_REQ_CONFIDENTIALITY, ASC_REQ_FLAGS,
+                ASC_REQ_MUTUAL_AUTH, ASC_RET_CONFIDENTIALITY, ASC_RET_MUTUAL_AUTH,
+                ISC_REQ_CONFIDENTIALITY, ISC_REQ_FLAGS, ISC_REQ_MUTUAL_AUTH,
+                ISC_RET_CONFIDENTIALITY, ISC_RET_MUTUAL_AUTH, KERB_WRAP_NO_ENCRYPT,
                 SECBUFFER_CHANNEL_BINDINGS, SECBUFFER_DATA, SECBUFFER_PADDING,
                 SECBUFFER_STREAM, SECBUFFER_TOKEN, SECBUFFER_VERSION,
-                SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_SIZES, SECPKG_CRED_ATTR_NAMES,
+                SECPKG_ATTR_NATIVE_NAMES, SECPKG_ATTR_NEGOTIATION_INFO,
+                SECPKG_ATTR_SIZES, SECPKG_CRED_ATTR_NAMES,
                 SECPKG_CRED_INBOUND, SECPKG_CRED_OUTBOUND, SECURITY_NATIVE_DREP,
                 SEC_CHANNEL_BINDINGS,
             },
@@ -49,6 +55,33 @@ use windows::{
 
 fn failed(res: i32) -> bool {
     res < 0
+}
+
+fn ensure_conf(confidential: bool, encrypt: bool) -> Result<()> {
+    if encrypt && !confidential {
+        bail!("encryption requested but the CONFIDENTIAL flag was not set");
+    }
+    Ok(())
+}
+
+// Build the SECBUFFER_CHANNEL_BINDINGS payload SSPI expects: a
+// SEC_CHANNEL_BINDINGS header followed by the application data. The returned
+// buffer must stay alive for the duration of the Init/Accept call that
+// references it.
+fn channel_bindings_buf(cb_token: &[u8]) -> BytesMut {
+    let mut buf =
+        BytesMut::with_capacity(mem::size_of::<SEC_CHANNEL_BINDINGS>() + cb_token.len());
+    let mut sec_cb = SEC_CHANNEL_BINDINGS::default();
+    sec_cb.dwApplicationDataOffset = mem::size_of::<SEC_CHANNEL_BINDINGS>() as u32;
+    sec_cb.cbApplicationDataLength = cb_token.len() as u32;
+    buf.extend(unsafe {
+        std::slice::from_raw_parts(
+            &sec_cb as *const SEC_CHANNEL_BINDINGS as *const u8,
+            mem::size_of::<SEC_CHANNEL_BINDINGS>(),
+        )
+    });
+    buf.extend(cb_token);
+    buf
 }
 
 unsafe fn string_from_wstr(s: *mut u16) -> String {
@@ -184,6 +217,33 @@ fn query_pkg_sizes(ctx: &mut SecHandle, sz: &mut SecPkgContext_Sizes) -> Result<
     Ok(())
 }
 
+// With the Negotiate (SPNEGO) package SSPI may select NTLM instead of
+// Kerberos. We only support Kerberos, so confirm the negotiated mechanism
+// and refuse anything else rather than silently running on a weaker protocol.
+fn verify_kerberos_negotiated(ctx: &mut SecHandle) -> Result<()> {
+    let mut info = SecPkgContext_NegotiationInfoW::default();
+    unsafe {
+        QueryContextAttributesW(
+            ctx,
+            SECPKG_ATTR_NEGOTIATION_INFO,
+            &mut info as *mut _ as *mut c_void,
+        )
+        .context("querying negotiation info")?;
+    }
+    if info.PackageInfo.is_null() {
+        bail!("negotiate did not report which security package it selected");
+    }
+    // Copy the name out before freeing the SSPI-allocated package info.
+    let name = unsafe { string_from_wstr((*info.PackageInfo).Name) };
+    unsafe {
+        let _ = FreeContextBuffer(info.PackageInfo as *mut c_void);
+    }
+    if name != "Kerberos" {
+        bail!("negotiate selected {name} instead of Kerberos");
+    }
+    Ok(())
+}
+
 fn wrap_iov(
     ctx: &mut SecHandle,
     sizes: &SecPkgContext_Sizes,
@@ -282,13 +342,18 @@ fn unwrap_iov(ctx: &mut SecHandle, len: usize, msg: &mut BytesMut) -> Result<Byt
     Ok(data)
 }
 
+// `expires` is the SSPI ptsExpiry timestamp. Counterintuitively, the Kerberos
+// SSP reports it in LOCAL time, not UTC (verified against a live KDC), so we
+// must compare it against a local-time "now": convert UTC system time to local
+// before turning it into a FILETIME. Do NOT "simplify" this to plain UTC — that
+// reintroduces an off-by-(UTC offset) error in the reported ttl.
 fn convert_lifetime(expires: i64) -> Result<Duration> {
     let mut lt = SYSTEMTIME::default();
     let mut ft = FILETIME::default();
     unsafe {
         let st = GetSystemTime();
         SystemTimeToTzSpecificLocalTime(None, &st, &mut lt)
-            .context("converting system to to local time")?;
+            .context("converting system time to local time")?;
         SystemTimeToFileTime(&lt, &mut ft)
             .context("converting system time to file time")?;
         let now: u64 = ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64);
@@ -333,6 +398,7 @@ pub struct ClientCtx {
     ctx: SecHandle,
     cred: Cred,
     target: Vec<u16>,
+    flags: InitiateFlags,
     attrs: u32,
     lifetime: i64,
     buf: Vec<u8>,
@@ -371,6 +437,7 @@ impl ClientCtx {
         cb_token: Option<&[u8]>,
     ) -> Result<(PendingClientCtx, impl Deref<Target = [u8]>)> {
         Self::new_with_cred(
+            flags,
             Cred::client_acquire(flags, principal)?,
             target_principal,
             cb_token,
@@ -378,6 +445,7 @@ impl ClientCtx {
     }
 
     pub(crate) fn new_with_cred(
+        flags: InitiateFlags,
         cred: Cred,
         target_principal: &str,
         cb_token: Option<&[u8]>,
@@ -386,6 +454,7 @@ impl ClientCtx {
             ctx: SecHandle::default(),
             cred,
             target: str_to_wstr(target_principal),
+            flags,
             attrs: 0,
             lifetime: 0,
             buf: alloc_krb5_buf()?,
@@ -418,7 +487,7 @@ impl ClientCtx {
             cBuffers: 1,
             pBuffers: &mut out_buf,
         };
-        let mut cbt_buf;
+        let cbt_buf;
         let mut in_buf = match data {
             InputData::Initial(None) => SecBuffer {
                 cbBuffer: 0,
@@ -426,20 +495,7 @@ impl ClientCtx {
                 pvBuffer: ptr::null_mut(),
             },
             InputData::Initial(Some(cb_token)) => {
-                cbt_buf = BytesMut::with_capacity(
-                    mem::size_of::<SEC_CHANNEL_BINDINGS>() + cb_token.len(),
-                );
-                let mut sec_cb = SEC_CHANNEL_BINDINGS::default();
-                sec_cb.dwApplicationDataOffset =
-                    mem::size_of::<SEC_CHANNEL_BINDINGS>() as u32;
-                sec_cb.cbApplicationDataLength = cb_token.len() as u32;
-                cbt_buf.extend(unsafe {
-                    std::slice::from_raw_parts(
-                        &sec_cb as *const SEC_CHANNEL_BINDINGS as *const u8,
-                        mem::size_of::<SEC_CHANNEL_BINDINGS>(),
-                    )
-                });
-                cbt_buf.extend(cb_token);
+                cbt_buf = channel_bindings_buf(cb_token);
                 SecBuffer {
                     cbBuffer: cbt_buf.len() as u32,
                     BufferType: SECBUFFER_CHANNEL_BINDINGS,
@@ -467,12 +523,22 @@ impl ClientCtx {
             }
             InputData::Initial(None) => None,
         };
+        // Request mutual auth / confidentiality unless the caller disabled them.
+        let want_mutual = !self.flags.contains(InitiateFlags::DISABLE_MUTUAL_AUTH);
+        let want_conf = !self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY);
+        let mut req = ISC_REQ_FLAGS(0);
+        if want_mutual {
+            req |= ISC_REQ_MUTUAL_AUTH;
+        }
+        if want_conf {
+            req |= ISC_REQ_CONFIDENTIALITY;
+        }
         let res = unsafe {
             InitializeSecurityContextW(
                 Some(&mut self.cred.0),
                 ctx_ptr,
                 Some(self.target.as_ptr()),
-                ISC_REQ_CONFIDENTIALITY | ISC_REQ_MUTUAL_AUTH,
+                req,
                 0,
                 SECURITY_NATIVE_DREP,
                 in_buf_ptr,
@@ -486,14 +552,27 @@ impl ClientCtx {
         if failed(res.0) {
             bail!("ClientCtx::step failed {}", format_error(res.0))
         }
-        if res == SEC_E_OK {
-            // We unconditionally request mutual auth and confidentiality; per
-            // RFC 2743 the initiator must confirm they were actually granted.
-            if self.attrs & ISC_RET_MUTUAL_AUTH == 0 {
-                bail!("mutual authentication was requested but not established");
+        // Some mechanisms require the generated token to be finalized before
+        // it is sent. SEC_E_OK and SEC_I_COMPLETE_NEEDED both mean the context
+        // is established; the *_CONTINUE variants mean another leg follows.
+        if res == SEC_I_COMPLETE_NEEDED || res == SEC_I_COMPLETE_AND_CONTINUE {
+            unsafe {
+                CompleteAuthToken(&self.ctx, &out_buf_desc)
+                    .context("completing auth token")?;
             }
-            if self.attrs & ISC_RET_CONFIDENTIALITY == 0 {
-                bail!("confidentiality was requested but not established");
+        }
+        if res == SEC_E_OK || res == SEC_I_COMPLETE_NEEDED {
+            // A requested property is only a hint; per RFC 2743 the initiator
+            // must confirm the mechanism actually granted what we required.
+            if want_mutual && self.attrs & ISC_RET_MUTUAL_AUTH == 0 {
+                bail!("mutual authentication was required but not established");
+            }
+            if want_conf && self.attrs & ISC_RET_CONFIDENTIALITY == 0 {
+                bail!("confidentiality was required but not established");
+            }
+            // SPNEGO can fall back to NTLM; insist on Kerberos when negotiating.
+            if self.flags.contains(InitiateFlags::NEGOTIATE_TOKEN) {
+                verify_kerberos_negotiated(&mut self.ctx)?;
             }
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
             self.done = true;
@@ -513,10 +592,12 @@ impl K5Ctx for ClientCtx {
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
+        ensure_conf(!self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY), encrypt)?;
         wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        ensure_conf(!self.flags.contains(InitiateFlags::DISABLE_CONFIDENTIALITY), encrypt)?;
         wrap_iov(
             &mut self.ctx,
             &mut self.sizes,
@@ -565,6 +646,8 @@ impl PendingServerCtx {
 pub struct ServerCtx {
     ctx: SecHandle,
     cred: Cred,
+    flags: AcceptFlags,
+    cb_token: Option<Vec<u8>>,
     buf: Vec<u8>,
     attrs: u32,
     lifetime: i64,
@@ -593,18 +676,25 @@ impl ServerCtx {
     pub(crate) fn new(
         flags: AcceptFlags,
         principal: Option<&str>,
+        channel_bindings: Option<&[u8]>,
     ) -> Result<PendingServerCtx> {
         Self::new_with_cred(
-            Cred::server_acquire(flags, principal)?
+            flags,
+            Cred::server_acquire(flags, principal)?,
+            channel_bindings,
         )
     }
 
     pub(crate) fn new_with_cred(
-        cred: Cred
+        flags: AcceptFlags,
+        cred: Cred,
+        channel_bindings: Option<&[u8]>,
     ) -> Result<PendingServerCtx> {
         Ok(PendingServerCtx(ServerCtx {
             ctx: SecHandle::default(),
             cred,
+            flags,
+            cb_token: channel_bindings.map(|cb| cb.to_vec()),
             buf: alloc_krb5_buf()?,
             attrs: 0,
             lifetime: 0,
@@ -633,15 +723,37 @@ impl ServerCtx {
             cBuffers: 1,
             pBuffers: &mut out_buf,
         };
-        let mut in_buf = SecBuffer {
-            cbBuffer: tok.len() as u32,
-            BufferType: SECBUFFER_TOKEN,
-            pvBuffer: unsafe { mem::transmute::<*const u8, *mut c_void>(tok.as_ptr()) },
+        // The client's token is always present; the channel bindings, if any,
+        // go in a second input buffer so the acceptor can verify them.
+        let cbt_buf;
+        let mut in_bufs = [
+            SecBuffer {
+                cbBuffer: tok.len() as u32,
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: tok.as_ptr() as *mut c_void,
+            },
+            SecBuffer {
+                cbBuffer: 0,
+                BufferType: SECBUFFER_TOKEN,
+                pvBuffer: ptr::null_mut(),
+            },
+        ];
+        let n_in_bufs = match &self.cb_token {
+            Some(cb) => {
+                cbt_buf = channel_bindings_buf(cb);
+                in_bufs[1] = SecBuffer {
+                    cbBuffer: cbt_buf.len() as u32,
+                    BufferType: SECBUFFER_CHANNEL_BINDINGS,
+                    pvBuffer: cbt_buf.as_ptr() as *mut c_void,
+                };
+                2
+            }
+            None => 1,
         };
         let in_buf_desc = SecBufferDesc {
             ulVersion: SECBUFFER_VERSION,
-            cBuffers: 1,
-            pBuffers: &mut in_buf,
+            cBuffers: n_in_bufs,
+            pBuffers: in_bufs.as_mut_ptr(),
         };
         let dfsh = SecHandle::default();
         let ctx_ptr =
@@ -650,12 +762,22 @@ impl ServerCtx {
             } else {
                 Some(&self.ctx as *const _)
             };
+        // Request mutual auth / confidentiality unless the caller disabled them.
+        let want_mutual = !self.flags.contains(AcceptFlags::DISABLE_MUTUAL_AUTH);
+        let want_conf = !self.flags.contains(AcceptFlags::DISABLE_CONFIDENTIALITY);
+        let mut req = ASC_REQ_FLAGS(0);
+        if want_mutual {
+            req |= ASC_REQ_MUTUAL_AUTH;
+        }
+        if want_conf {
+            req |= ASC_REQ_CONFIDENTIALITY;
+        }
         let res = unsafe {
             AcceptSecurityContext(
                 Some(&self.cred.0),
                 ctx_ptr,
                 Some(&in_buf_desc),
-                ASC_REQ_CONFIDENTIALITY | ASC_REQ_MUTUAL_AUTH,
+                req,
                 SECURITY_NATIVE_DREP,
                 Some(&mut self.ctx),
                 Some(&mut out_buf_desc),
@@ -666,7 +788,24 @@ impl ServerCtx {
         if failed(res.0) {
             bail!("ServerCtx::step failed {}", format_error(res.0));
         }
-        if res == SEC_E_OK {
+        if res == SEC_I_COMPLETE_NEEDED || res == SEC_I_COMPLETE_AND_CONTINUE {
+            unsafe {
+                CompleteAuthToken(&self.ctx, &out_buf_desc)
+                    .context("completing auth token")?;
+            }
+        }
+        if res == SEC_E_OK || res == SEC_I_COMPLETE_NEEDED {
+            // The acceptor must likewise confirm the properties it required
+            // were granted before treating the context as usable.
+            if want_mutual && self.attrs & ASC_RET_MUTUAL_AUTH == 0 {
+                bail!("mutual authentication was required but not established");
+            }
+            if want_conf && self.attrs & ASC_RET_CONFIDENTIALITY == 0 {
+                bail!("confidentiality was required but not established");
+            }
+            if self.flags.contains(AcceptFlags::NEGOTIATE_TOKEN) {
+                verify_kerberos_negotiated(&mut self.ctx)?;
+            }
             query_pkg_sizes(&mut self.ctx, &mut self.sizes)?;
             self.done = true;
         }
@@ -685,10 +824,12 @@ impl K5Ctx for ServerCtx {
     type IOVBuffer = Chain<BytesMut, Chain<BytesMut, BytesMut>>;
 
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<BytesMut> {
+        ensure_conf(!self.flags.contains(AcceptFlags::DISABLE_CONFIDENTIALITY), encrypt)?;
         wrap(&mut self.ctx, &self.sizes, encrypt, msg)
     }
 
     fn wrap_iov(&mut self, encrypt: bool, mut msg: BytesMut) -> Result<Self::IOVBuffer> {
+        ensure_conf(!self.flags.contains(AcceptFlags::DISABLE_CONFIDENTIALITY), encrypt)?;
         wrap_iov(
             &mut self.ctx,
             &mut self.sizes,

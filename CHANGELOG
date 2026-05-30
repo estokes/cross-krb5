@@ -1,5 +1,5 @@
 0.5.0:
-- upgrade libgssapi to 0.10.0, which carries several soundness fixes.
+- upgrade libgssapi to 0.11.0, which carries several soundness fixes.
   Notably libgssapi dropped Sync from its client and server contexts,
   since gssapi (and equally sspi) forbid concurrent use of a single
   context. ClientCtx and ServerCtx are now Send but no longer Sync on
@@ -7,6 +7,47 @@
   auto-Sync, this is enforced explicitly to keep the API uniform. Share
   a context behind a Mutex if you need it on multiple threads. This is a
   semver visible change, hence the minor version bump.
+- upgrade the windows crate to 0.62.
+- SECURITY: a first security review of the windows backend turned up
+  several memory-safety and correctness bugs, now fixed: a use-after-free
+  of the principal name buffer in credential acquisition; a
+  use-after-free / double-free in the Cred -> SecHandle conversion;
+  ttl() overstating the remaining session lifetime by a factor of a
+  million (wrong 100ns-to-seconds divisor); and unchecked length/offset
+  arithmetic in unwrap/unwrap_iov that could panic on a hostile token.
+  unwrap_iov now rejects an out-of-range length on both platforms.
+- SECURITY: context establishment now verifies that the security
+  properties it requested were actually granted (per RFC 2743), on both
+  the initiator and the acceptor and on both platforms, rather than
+  assuming a completed handshake implies them.
+- mutual authentication and confidentiality are now on and verified by
+  default. AcceptFlags and InitiateFlags gain DISABLE_MUTUAL_AUTH and
+  DISABLE_CONFIDENTIALITY to opt out; the empty (and Default) flag set is
+  fully secure, so existing callers passing `empty()` keep the strong
+  guarantees with no change. wrap/wrap_iov with encrypt = true now fail
+  unless confidentiality is enabled.
+- API: ClientCtx::new_with_cred and ServerCtx::new_with_cred now take a
+  flags argument, so an injected credential gets the same control over
+  mutual auth / confidentiality / negotiate as the principal-based path.
+- SECURITY (windows): when the Negotiate package is selected via
+  NEGOTIATE_TOKEN, the established context is now checked to confirm the
+  negotiated mechanism is actually Kerberos; a fallback to NTLM is
+  rejected rather than silently accepted.
+- windows: handle the SEC_I_COMPLETE_NEEDED / SEC_I_COMPLETE_AND_CONTINUE
+  results by calling CompleteAuthToken, instead of mishandling them as an
+  ordinary continue.
+- API (windows): the safe From<SecHandle> for Cred is replaced by the
+  unsafe Cred::from_raw, since wrapping a raw credential handle whose
+  ownership cannot be verified is not a safe operation (dropping the Cred
+  frees the handle). This mirrors libgssapi 0.10 making the equivalent
+  conversion unsafe. Into<SecHandle> is unchanged.
+- API: ServerCtx::new and ServerCtx::new_with_cred now take a
+  channel_bindings argument so the acceptor can supply and enforce channel
+  bindings, matching the client side. (This is what required the libgssapi
+  0.11 bump: its ServerCtx::step gained a channel-bindings parameter.) Note
+  that to actually enforce binding the server must pass its own expected
+  bindings; with a null acceptor binding the mechanism accepts whatever the
+  client sent.
 
 0.4.2:
 - merge #13, adding the ability to inject custom credentials on both platforms
